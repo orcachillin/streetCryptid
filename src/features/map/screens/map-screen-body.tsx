@@ -9,6 +9,7 @@ import { useCryptidProfile } from '@/features/account/hooks/use-cryptid-profile'
 import {
   CoverageIsland,
   FriendHistoryIsland,
+  LocateMeControl,
   MapLayersControl,
   MapView,
   useMapTheme,
@@ -51,6 +52,10 @@ export default function MapScreenBody() {
   }
   const selectedEndpoint = selection.selectedId;
   const [explorationEnabled, setExplorationEnabled] = useState(true);
+  const [locateTarget, setLocateTarget] = useState<{
+    requestId: number;
+    location: MapFriendLocation['location'];
+  } | null>(null);
   const [readout, setReadout] = useState<{
     placeName: string | null;
     coverage: number;
@@ -152,6 +157,13 @@ export default function MapScreenBody() {
     [toggleSelection]
   );
   const selectSelf = useCallback(() => toggleSelection(SELF_AUTHOR), [toggleSelection]);
+  const locateSelf = useCallback(() => {
+    if (!selfFix) return;
+    setLocateTarget((current) => ({
+      requestId: (current?.requestId ?? 0) + 1,
+      location: { lat: selfFix.lat, lon: selfFix.lon },
+    }));
+  }, [selfFix]);
 
   const pct = Math.round(readout.coverage * 100);
   const friendNames = mapFriends.map((friend) => friend.handle).join(', ');
@@ -190,6 +202,7 @@ export default function MapScreenBody() {
           key={mapSessionKey}
           onReadout={onReadout}
           initialCenter={initialCenter}
+          locateTarget={locateTarget}
           onSelectFriend={selectFriend}
           onSelectSelf={selectSelf}
           friends={mapFriends}
@@ -204,11 +217,18 @@ export default function MapScreenBody() {
         pointerEvents="box-none"
         style={[styles.controlsLayer, { top: insets.top + TopTabInset + Spacing.three }]}
       >
-        <MapLayersControl
-          enabled={explorationEnabled}
-          onChange={setExplorationEnabled}
-          theme={theme}
-        />
+        <View style={styles.controls}>
+          <MapLayersControl
+            enabled={explorationEnabled}
+            onChange={setExplorationEnabled}
+            theme={theme}
+          />
+          <LocateMeControl
+            disabled={!hasLiveSelfFix || !selfFix}
+            onPress={locateSelf}
+            theme={theme}
+          />
+        </View>
       </View>
       {/* Tile attribution. `pointerEvents="none"` on the layer AND the text so it
           never eats a pan or a tap — it is decoration over a full-bleed canvas. */}
@@ -247,6 +267,7 @@ export default function MapScreenBody() {
 function MapSession({
   accessibilityLabel,
   initialCenter,
+  locateTarget,
   selfLocation,
   selfFix,
   friends,
@@ -260,6 +281,7 @@ function MapSession({
 }: {
   accessibilityLabel: string;
   initialCenter: MapFriendLocation['location'] | null;
+  locateTarget: { requestId: number; location: MapFriendLocation['location'] } | null;
   selfLocation: MapFriendLocation['location'] | null;
   selfFix: LocationFix | null;
   friends: readonly MapFriendLocation[];
@@ -279,6 +301,7 @@ function MapSession({
       explorationEnabled={explorationEnabled}
       onReadout={onReadout}
       initialCenter={sessionCenter}
+      locateTarget={locateTarget}
       onSelectFriend={onSelectFriend}
       onSelectSelf={onSelectSelf}
       friends={friends}
@@ -314,6 +337,10 @@ const styles = StyleSheet.create({
   controlsLayer: {
     position: 'absolute',
     right: Spacing.three,
+  },
+  controls: {
+    alignItems: 'flex-end',
+    gap: Spacing.two,
   },
   attributionLayer: {
     position: 'absolute',
