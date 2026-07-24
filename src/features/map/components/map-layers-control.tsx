@@ -18,8 +18,47 @@ export function MapLayersControl({ enabled, theme, onChange }: MapLayersControlP
 
   return (
     <View pointerEvents="box-none" style={styles.control}>
-      {/* Button first so the panel expands DOWNWARD out of it, rather than
-          rising over the button it came from. */}
+      {/* Panel first so it expands UPWARD out of the button. The control sits at
+          the bottom of the screen, so downward has nowhere to go — it would open
+          off-screen behind the island. */}
+      {expanded ? (
+        // The whole row is the checkbox target — the label needs no separate hit
+        // area, and one self-evident title replaces the old title + description.
+        <Pressable
+          accessibilityLabel="Exploration overlay"
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: enabled }}
+          onPress={() => onChange(!enabled)}
+          style={({ pressed }) => [
+            styles.panel,
+            {
+              backgroundColor: chrome.island,
+              borderColor: chrome.islandBorder,
+              opacity: pressed ? 0.68 : 1,
+            },
+          ]}
+        >
+          <Text style={[styles.title, { color: chrome.ink }]}>Exploration</Text>
+          <View
+            style={[
+              styles.checkbox,
+              {
+                backgroundColor: enabled ? chrome.amber : 'transparent',
+                borderColor: enabled ? chrome.amber : chrome.steel,
+              },
+            ]}
+          >
+            {enabled ? (
+              <SymbolView
+                name={{ ios: 'checkmark', android: 'check', web: 'check' }}
+                size={13}
+                tintColor={chrome.island}
+              />
+            ) : null}
+          </View>
+        </Pressable>
+      ) : null}
+
       <Pressable
         accessibilityLabel="Map layers"
         accessibilityRole="button"
@@ -40,44 +79,6 @@ export function MapLayersControl({ enabled, theme, onChange }: MapLayersControlP
           tintColor={enabled ? chrome.amber : chrome.steel}
         />
       </Pressable>
-
-      {expanded ? (
-        // The whole row is the checkbox target — the label needs no separate hit
-        // area, and one self-evident title replaces the old title + description.
-        <Pressable
-          accessibilityLabel="Exploration overlay"
-          accessibilityRole="checkbox"
-          accessibilityState={{ checked: enabled }}
-          onPress={() => onChange(!enabled)}
-          style={({ pressed }) => [
-            styles.panel,
-            {
-              backgroundColor: chrome.island,
-              borderColor: chrome.islandBorder,
-              opacity: pressed ? 0.68 : 1,
-            },
-          ]}
-        >
-          <Text style={[styles.title, { color: chrome.ink }]}>Exploration Overlay</Text>
-          <View
-            style={[
-              styles.checkbox,
-              {
-                backgroundColor: enabled ? chrome.amber : 'transparent',
-                borderColor: enabled ? chrome.amber : chrome.steel,
-              },
-            ]}
-          >
-            {enabled ? (
-              <SymbolView
-                name={{ ios: 'checkmark', android: 'check', web: 'check' }}
-                size={13}
-                tintColor={chrome.island}
-              />
-            ) : null}
-          </View>
-        </Pressable>
-      ) : null}
     </View>
   );
 }

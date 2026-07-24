@@ -213,11 +213,25 @@ export default function MapScreenBody() {
           selfFix={hasLiveSelfFix ? selfFix : null}
         />
       </View>
+      {/* Tile attribution. `pointerEvents="none"` on the layer AND the text so it
+          never eats a pan or a tap — it is decoration over a full-bleed canvas. */}
+      <View
+        pointerEvents="none"
+        style={[styles.attributionLayer, { top: insets.top + TopTabInset + Spacing.three }]}
+      >
+        <Text style={[styles.attribution, { color: theme.chrome.steel }]} numberOfLines={1}>
+          © OPENSTREETMAP
+        </Text>
+      </View>
+      {/* Controls ride directly above the island so both stay in thumb reach.
+          Living inside the bottom-anchored stack (rather than at a fixed offset)
+          keeps them pinned to the island's top edge no matter which island is
+          showing, and lets the layers panel grow upward into free space. */}
       <View
         pointerEvents="box-none"
-        style={[styles.controlsLayer, { top: insets.top + TopTabInset + Spacing.three }]}
+        style={[styles.islandLayer, { paddingBottom: islandBottomPadding }]}
       >
-        <View style={styles.controls}>
+        <View pointerEvents="box-none" style={styles.controls}>
           <MapLayersControl
             enabled={explorationEnabled}
             onChange={setExplorationEnabled}
@@ -229,21 +243,6 @@ export default function MapScreenBody() {
             theme={theme}
           />
         </View>
-      </View>
-      {/* Tile attribution. `pointerEvents="none"` on the layer AND the text so it
-          never eats a pan or a tap — it is decoration over a full-bleed canvas. */}
-      <View
-        pointerEvents="none"
-        style={[styles.attributionLayer, { top: insets.top + TopTabInset + Spacing.three }]}
-      >
-        <Text style={[styles.attribution, { color: theme.chrome.steel }]} numberOfLines={1}>
-          © OPENSTREETMAP
-        </Text>
-      </View>
-      <View
-        pointerEvents="box-none"
-        style={[styles.islandLayer, { paddingBottom: islandBottomPadding }]}
-      >
         {selectedHistory ? (
           <FriendHistoryIsland
             friend={selectedHistory}
@@ -334,13 +333,10 @@ const styles = StyleSheet.create({
     right: Spacing.three,
     bottom: 0,
   },
-  controlsLayer: {
-    position: 'absolute',
-    right: Spacing.three,
-  },
   controls: {
     alignItems: 'flex-end',
     gap: Spacing.two,
+    marginBottom: Spacing.three,
   },
   attributionLayer: {
     position: 'absolute',
