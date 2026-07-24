@@ -1,6 +1,6 @@
 import { SymbolView } from 'expo-symbols';
 import { useState } from 'react';
-import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { CryptidTheme } from '@/constants/cryptid-theme';
 import { Spacing } from '@/constants/theme';
@@ -18,31 +18,45 @@ export function MapLayersControl({ enabled, theme, onChange }: MapLayersControlP
 
   return (
     <View pointerEvents="box-none" style={styles.control}>
+      {/* Panel first so it expands UPWARD out of the button. The control sits at
+          the bottom of the screen, so downward has nowhere to go — it would open
+          off-screen behind the island. */}
       {expanded ? (
-        <View
-          style={[
+        // The whole row is the checkbox target — the label needs no separate hit
+        // area, and one self-evident title replaces the old title + description.
+        <Pressable
+          accessibilityLabel="Exploration overlay"
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: enabled }}
+          onPress={() => onChange(!enabled)}
+          style={({ pressed }) => [
             styles.panel,
             {
               backgroundColor: chrome.island,
               borderColor: chrome.islandBorder,
+              opacity: pressed ? 0.68 : 1,
             },
           ]}
         >
-          <View style={styles.copy}>
-            <Text style={[styles.title, { color: chrome.ink }]}>Exploration</Text>
-            <Text style={[styles.detail, { color: chrome.steel }]}>
-              Explored / unexplored overlay
-            </Text>
+          <Text style={[styles.title, { color: chrome.ink }]}>Exploration</Text>
+          <View
+            style={[
+              styles.checkbox,
+              {
+                backgroundColor: enabled ? chrome.amber : 'transparent',
+                borderColor: enabled ? chrome.amber : chrome.steel,
+              },
+            ]}
+          >
+            {enabled ? (
+              <SymbolView
+                name={{ ios: 'checkmark', android: 'check', web: 'check' }}
+                size={13}
+                tintColor={chrome.island}
+              />
+            ) : null}
           </View>
-          <Switch
-            accessibilityLabel="Explored and unexplored overlay"
-            ios_backgroundColor={chrome.seg}
-            onValueChange={onChange}
-            thumbColor={enabled ? chrome.panel : chrome.steel}
-            trackColor={{ false: chrome.seg, true: chrome.amber }}
-            value={enabled}
-          />
-        </View>
+        </Pressable>
       ) : null}
 
       <Pressable
@@ -80,23 +94,22 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
     gap: Spacing.three,
-    minHeight: 64,
+    minHeight: 44,
     paddingHorizontal: Spacing.three,
-    width: 250,
-  },
-  copy: {
-    flex: 1,
-    gap: 2,
   },
   title: {
     fontFamily: 'Rajdhani_600SemiBold',
     fontSize: 17,
     fontWeight: '600',
+    lineHeight: 20,
   },
-  detail: {
-    fontFamily: 'IBMPlexMono_400Regular',
-    fontSize: 10,
-    lineHeight: 14,
+  checkbox: {
+    alignItems: 'center',
+    borderRadius: 4,
+    borderWidth: 1.5,
+    height: 20,
+    justifyContent: 'center',
+    width: 20,
   },
   fab: {
     alignItems: 'center',

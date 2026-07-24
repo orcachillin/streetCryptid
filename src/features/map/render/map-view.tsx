@@ -109,6 +109,8 @@ const FRIEND_PREFETCH_MAX = 4;
 /** Double-tap zoom-in factor and animation length. */
 const DOUBLE_TAP_FACTOR = 2;
 const DOUBLE_TAP_MS = 260;
+/** Locate-me camera animation length. */
+const LOCATE_ME_MS = 360;
 
 interface ScreenRect {
   x: number;
@@ -186,6 +188,7 @@ export function MapView({
   accessibilityLabel,
   onSelectSelf,
   onSelectFriend,
+  locateTarget = null,
 }: {
   /** Surfaces the coverage/place readout to the surrounding chrome. */
   onReadout?: (readout: MapReadout) => void;
@@ -201,6 +204,7 @@ export function MapView({
   accessibilityLabel?: string;
   onSelectSelf?: () => void;
   onSelectFriend?: (friendId: string) => void;
+  locateTarget?: { readonly requestId: number; readonly location: LatLon } | null;
 }) {
   const [viewport, setViewport] = useState<Viewport | null>(null);
   const reducedMotion = useReducedMotion();
@@ -224,8 +228,18 @@ export function MapView({
     return out;
   }, [friends, selectedFriendId]);
 
-  const { theme, region, pending, anchor, limits, coverage, placeName, commit, prefetchAt } =
-    useMapEngine(viewport, initialCenter, selfFix, friendTargets);
+  const {
+    theme,
+    region,
+    pending,
+    anchor,
+    limits,
+    coverage,
+    sectorsVisible,
+    placeName,
+    commit,
+    prefetchAt,
+  } = useMapEngine(viewport, initialCenter, selfFix, friendTargets);
 
   // ── The one live view transform (anchor space → screen), UI-thread-owned ──
   const k = useSharedValue(1);
@@ -542,8 +556,8 @@ export function MapView({
   }, [selectedTrail]);
 
   useEffect(() => {
-    onReadout?.({ coverage, placeName });
-  }, [coverage, placeName, onReadout]);
+    onReadout?.({ coverage, sectorsVisible, placeName });
+  }, [coverage, sectorsVisible, placeName, onReadout]);
 
   // Viewport resize (rotation, window resize): anchor-space px depend on the
   // viewport, so re-express the current camera in the new space. The only place
@@ -562,6 +576,40 @@ export function MapView({
     commit(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewport, anchor]);
+
+  useEffect(() => {
+    if (!viewport || !limits || !locateTarget) return;
+    cancelAnimation(k);
+    cancelAnimation(tx);
+    cancelAnimation(ty);
+    decaysLeft.value = 0;
+
+    const current = applyViewTransform(anchor, viewport, {
+      k: k.value,
+      tx: tx.value,
+      ty: ty.value,
+    });
+    const to = clampTranslation(
+      viewTransformFor(anchor, viewport, {
+        center: latLonToWorld(locateTarget.location),
+        zoom: current.zoom,
+      }),
+      limits
+    );
+    const config = {
+      duration: reducedMotion ? 0 : LOCATE_ME_MS,
+      easing: Easing.out(Easing.cubic),
+    };
+    lastPrefetch.value = to;
+    k.value = withTiming(to.k, config);
+    tx.value = withTiming(to.tx, config);
+    ty.value = withTiming(to.ty, config, (finished) => {
+      if (finished) runOnJS(commit)(to);
+    });
+    // Shared values are stable references; requestId intentionally retriggers
+    // when the user taps locate again at the same coordinates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locateTarget?.requestId, viewport, anchor, limits, reducedMotion, commit]);
 
   const requestPrefetch = useCallback(
     (t: ViewTransform) => {
@@ -758,165 +806,182 @@ export function MapView({
       onLayout={onLayout}
       testID="map-view"
     >
+      {/* Everything touchable lives inside this detector. The locators used to be
+          siblings AFTER it, which put them outside the gesture tree entirely — a
+          finger landing on the YOU marker never reached the map's pan/pinch, so
+          the gesture simply did not happen. Nested here, RNGH lets the pan claim
+          the touch once the finger moves (the Pressable cancels its own press),
+          while a clean tap still selects.
+
+          The locators are siblings OF the accessible canvas view, not children of
+          it: `accessible` collapses descendants into one element, which would hide
+          every locator button from screen readers. */}
       <GestureDetector gesture={composedGesture}>
-        <View
-          accessible={Boolean(accessibilityLabel)}
-          accessibilityLabel={accessibilityLabel}
-          accessibilityRole="image"
-          style={styles.fill}
-        >
-          {viewport && (
-            <Canvas style={styles.fill}>
-              <Group transform={transform}>
-                {loadingRect && (
-                  <Rect
-                    x={loadingRect.x}
-                    y={loadingRect.y}
-                    width={loadingRect.width}
-                    height={loadingRect.height}
-                    color={theme.chrome.island}
-                    opacity={skeletonOpacity}
-                  />
-                )}
-                {/* Retained coverage layer — stays under the reveal now: the wipe
+        <View style={styles.fill}>
+          <View
+            accessible={Boolean(accessibilityLabel)}
+            accessibilityLabel={accessibilityLabel}
+            accessibilityRole="image"
+            style={styles.fill}
+          >
+            {viewport && (
+              <Canvas style={styles.fill}>
+                <Group transform={transform}>
+                  {loadingRect && (
+                    <Rect
+                      x={loadingRect.x}
+                      y={loadingRect.y}
+                      width={loadingRect.width}
+                      height={loadingRect.height}
+                      color={theme.chrome.island}
+                      opacity={skeletonOpacity}
+                    />
+                  )}
+                  {/* Retained coverage layer — stays under the reveal now: the wipe
                     swaps its pixels in instantly where prev already covered
                     (uPrevRect), so only the newly-exposed ground hex-loads in. */}
-                {prevImage && prevRect && (
-                  <SkiaImage
-                    image={prevImage}
-                    x={prevRect.x}
-                    y={prevRect.y}
-                    width={prevRect.width}
-                    height={prevRect.height}
-                    fit="fill"
-                  />
-                )}
-                {curImage &&
-                  curRect &&
-                  (revealing && revealEffect && curCellImage && curRectSk ? (
-                    // Hex load-in: paint the finished bitmap through the reveal
-                    // wipe (one cheap GPU pass). Pixels prev already covered swap
-                    // in instantly; only new ground animates. Bounded to curRect;
-                    // hands back to <Image> the instant the wipe completes.
-                    <Rect x={curRect.x} y={curRect.y} width={curRect.width} height={curRect.height}>
-                      <Shader source={revealEffect} uniforms={revealUniforms}>
-                        <ImageShader image={curImage} rect={curRectSk} fit="fill" />
-                        <ImageShader image={curCellImage} rect={curRectSk} fit="fill" />
-                      </Shader>
-                    </Rect>
-                  ) : (
+                  {prevImage && prevRect && (
                     <SkiaImage
-                      image={curImage}
-                      x={curRect.x}
-                      y={curRect.y}
-                      width={curRect.width}
-                      height={curRect.height}
+                      image={prevImage}
+                      x={prevRect.x}
+                      y={prevRect.y}
+                      width={prevRect.width}
+                      height={prevRect.height}
                       fit="fill"
-                      opacity={curOpacityValue}
                     />
-                  ))}
-                {selectedTrail ? (
-                  <>
-                    <Path
-                      color={selectedTrail.color}
-                      opacity={0.72}
-                      path={selectedTrail.path}
-                      strokeCap="round"
-                      strokeJoin="round"
-                      strokeWidth={trailStrokeWidth}
-                      style="stroke"
-                    />
-                    {selectedTrail.points.map(({ id, screen }, index) => (
-                      <Circle
-                        color={selectedTrail.color}
-                        cx={screen[0]}
-                        cy={screen[1]}
-                        key={id}
-                        opacity={0.34 + (0.5 * (index + 1)) / selectedTrail.points.length}
-                        r={trailDotRadius}
+                  )}
+                  {curImage &&
+                    curRect &&
+                    (revealing && revealEffect && curCellImage && curRectSk ? (
+                      // Hex load-in: paint the finished bitmap through the reveal
+                      // wipe (one cheap GPU pass). Pixels prev already covered swap
+                      // in instantly; only new ground animates. Bounded to curRect;
+                      // hands back to <Image> the instant the wipe completes.
+                      <Rect
+                        x={curRect.x}
+                        y={curRect.y}
+                        width={curRect.width}
+                        height={curRect.height}
+                      >
+                        <Shader source={revealEffect} uniforms={revealUniforms}>
+                          <ImageShader image={curImage} rect={curRectSk} fit="fill" />
+                          <ImageShader image={curCellImage} rect={curRectSk} fit="fill" />
+                        </Shader>
+                      </Rect>
+                    ) : (
+                      <SkiaImage
+                        image={curImage}
+                        x={curRect.x}
+                        y={curRect.y}
+                        width={curRect.width}
+                        height={curRect.height}
+                        fit="fill"
+                        opacity={curOpacityValue}
                       />
                     ))}
-                  </>
-                ) : null}
-              </Group>
-            </Canvas>
-          )}
-        </View>
-      </GestureDetector>
+                  {selectedTrail ? (
+                    <>
+                      <Path
+                        color={selectedTrail.color}
+                        opacity={0.72}
+                        path={selectedTrail.path}
+                        strokeCap="round"
+                        strokeJoin="round"
+                        strokeWidth={trailStrokeWidth}
+                        style="stroke"
+                      />
+                      {selectedTrail.points.map(({ id, screen }, index) => (
+                        <Circle
+                          color={selectedTrail.color}
+                          cx={screen[0]}
+                          cy={screen[1]}
+                          key={id}
+                          opacity={0.34 + (0.5 * (index + 1)) / selectedTrail.points.length}
+                          r={trailDotRadius}
+                        />
+                      ))}
+                    </>
+                  ) : null}
+                </Group>
+              </Canvas>
+            )}
+          </View>
 
-      {viewport
-        ? locatorClusters.map((cluster) => {
-            if (cluster.length === 1) {
-              const locator = cluster[0];
-              if (locator.kind === 'self') {
+          {viewport
+            ? locatorClusters.map((cluster) => {
+                if (cluster.length === 1) {
+                  const locator = cluster[0];
+                  if (locator.kind === 'self') {
+                    return (
+                      <YouLocator
+                        accent={theme.canvas.accent}
+                        key="self"
+                        onPress={() => onSelectSelf?.()}
+                        panelColor={theme.chrome.island}
+                        scale={k}
+                        selected={selfSelected}
+                        translateX={tx}
+                        translateY={ty}
+                        x={locator.anchor[0]}
+                        y={locator.anchor[1]}
+                      />
+                    );
+                  }
+                  return (
+                    <FriendLocator
+                      color={locator.color}
+                      handle={locator.handle}
+                      key={locator.id}
+                      onPress={() => onSelectFriend?.(locator.id)}
+                      panelColor={theme.chrome.island}
+                      scale={k}
+                      selected={locator.id === selectedFriendId}
+                      sigil={locator.sigil}
+                      stale={locator.stale}
+                      translateX={tx}
+                      translateY={ty}
+                      x={locator.anchor[0]}
+                      y={locator.anchor[1]}
+                    />
+                  );
+                }
+
+                const anchorSum = cluster.reduce(
+                  (sum, locator) => [sum[0] + locator.anchor[0], sum[1] + locator.anchor[1]],
+                  [0, 0]
+                );
                 return (
-                  <YouLocator
-                    accent={theme.canvas.accent}
-                    key="self"
-                    onPress={() => onSelectSelf?.()}
+                  <FriendLocatorStack
+                    friends={cluster.map((locator) =>
+                      locator.kind === 'self'
+                        ? {
+                            id: locator.id,
+                            handle: 'YOU',
+                            sigil: '',
+                            color: locator.color,
+                            selected: selfSelected,
+                            self: true,
+                          }
+                        : {
+                            ...locator,
+                            selected: locator.id === selectedFriendId,
+                          }
+                    )}
+                    key={cluster.map((locator) => `${locator.kind}:${locator.id}`).join(':')}
+                    onPress={(friendId) => onSelectFriend?.(friendId)}
+                    onPressSelf={() => onSelectSelf?.()}
                     panelColor={theme.chrome.island}
                     scale={k}
-                    selected={selfSelected}
                     translateX={tx}
                     translateY={ty}
-                    x={locator.anchor[0]}
-                    y={locator.anchor[1]}
+                    x={anchorSum[0] / cluster.length}
+                    y={anchorSum[1] / cluster.length}
                   />
                 );
-              }
-              return (
-                <FriendLocator
-                  color={locator.color}
-                  handle={locator.handle}
-                  key={locator.id}
-                  onPress={() => onSelectFriend?.(locator.id)}
-                  panelColor={theme.chrome.island}
-                  scale={k}
-                  selected={locator.id === selectedFriendId}
-                  sigil={locator.sigil}
-                  stale={locator.stale}
-                  translateX={tx}
-                  translateY={ty}
-                  x={locator.anchor[0]}
-                  y={locator.anchor[1]}
-                />
-              );
-            }
-
-            const anchorSum = cluster.reduce(
-              (sum, locator) => [sum[0] + locator.anchor[0], sum[1] + locator.anchor[1]],
-              [0, 0]
-            );
-            return (
-              <FriendLocatorStack
-                friends={cluster.map((locator) =>
-                  locator.kind === 'self'
-                    ? {
-                        id: locator.id,
-                        handle: 'YOU',
-                        sigil: '',
-                        color: locator.color,
-                        selected: selfSelected,
-                        self: true,
-                      }
-                    : {
-                        ...locator,
-                        selected: locator.id === selectedFriendId,
-                      }
-                )}
-                key={cluster.map((locator) => `${locator.kind}:${locator.id}`).join(':')}
-                onPress={(friendId) => onSelectFriend?.(friendId)}
-                onPressSelf={() => onSelectSelf?.()}
-                panelColor={theme.chrome.island}
-                scale={k}
-                translateX={tx}
-                translateY={ty}
-                x={anchorSum[0] / cluster.length}
-                y={anchorSum[1] / cluster.length}
-              />
-            );
-          })
-        : null}
+              })
+            : null}
+        </View>
+      </GestureDetector>
     </View>
   );
 }
