@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Platform, StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { resolveSignalColor } from '@/constants/signal-colors';
@@ -56,16 +56,27 @@ export default function MapScreenBody() {
     requestId: number;
     location: MapFriendLocation['location'];
   } | null>(null);
-  const [readout, setReadout] = useState<{ placeName: string | null; coverage: number }>({
+  const [readout, setReadout] = useState<{
+    placeName: string | null;
+    coverage: number;
+    sectorsVisible: boolean;
+  }>({
     placeName: null,
     coverage: 0,
+    sectorsVisible: true,
   });
 
   const onReadout = useCallback((next: MapReadout) => {
     setReadout((current) =>
-      current.placeName === next.placeName && current.coverage === next.coverage
+      current.placeName === next.placeName &&
+      current.coverage === next.coverage &&
+      current.sectorsVisible === next.sectorsVisible
         ? current
-        : { placeName: next.placeName, coverage: next.coverage }
+        : {
+            placeName: next.placeName,
+            coverage: next.coverage,
+            sectorsVisible: next.sectorsVisible,
+          }
     );
   }, []);
 
@@ -124,12 +135,28 @@ export default function MapScreenBody() {
     setSelection((current) => ({ ...current, selectedId: null }));
     if (requestedFriendId) router.setParams({ friend: undefined });
   }, [requestedFriendId, router]);
-  const selectFriend = useCallback((friendId: string) => {
-    setSelection((current) => ({ ...current, selectedId: friendId }));
-  }, []);
-  const selectSelf = useCallback(() => {
-    setSelection((current) => ({ ...current, selectedId: SELF_AUTHOR }));
-  }, []);
+  // Tapping a locator toggles its trace island: re-tapping the one already open
+  // closes it, exactly like the island's X. Tapping a DIFFERENT locator still
+  // swaps straight to it rather than closing, so moving between friends is one
+  // tap, not two. Closing clears the `?friend=` param for the same reason
+  // `closeHistory` does — otherwise a deep-linked friend leaves a stale param
+  // that the route-change check would not fire on again.
+  const toggleSelection = useCallback(
+    (id: string) => {
+      if (selectedEndpoint !== id) {
+        setSelection((current) => ({ ...current, selectedId: id }));
+        return;
+      }
+      setSelection((current) => ({ ...current, selectedId: null }));
+      if (requestedFriendId) router.setParams({ friend: undefined });
+    },
+    [requestedFriendId, router, selectedEndpoint]
+  );
+  const selectFriend = useCallback(
+    (friendId: string) => toggleSelection(friendId),
+    [toggleSelection]
+  );
+  const selectSelf = useCallback(() => toggleSelection(SELF_AUTHOR), [toggleSelection]);
   const locateSelf = useCallback(() => {
     if (!selfFix) return;
     setLocateTarget((current) => ({
@@ -186,11 +213,25 @@ export default function MapScreenBody() {
           selfFix={hasLiveSelfFix ? selfFix : null}
         />
       </View>
+      {/* Tile attribution. `pointerEvents="none"` on the layer AND the text so it
+          never eats a pan or a tap — it is decoration over a full-bleed canvas. */}
+      <View
+        pointerEvents="none"
+        style={[styles.attributionLayer, { top: insets.top + TopTabInset + Spacing.three }]}
+      >
+        <Text style={[styles.attribution, { color: theme.chrome.steel }]} numberOfLines={1}>
+          © OPENSTREETMAP
+        </Text>
+      </View>
+      {/* Controls ride directly above the island so both stay in thumb reach.
+          Living inside the bottom-anchored stack (rather than at a fixed offset)
+          keeps them pinned to the island's top edge no matter which island is
+          showing, and lets the layers panel grow upward into free space. */}
       <View
         pointerEvents="box-none"
-        style={[styles.controlsLayer, { top: insets.top + TopTabInset + Spacing.three }]}
+        style={[styles.islandLayer, { paddingBottom: islandBottomPadding }]}
       >
-        <View style={styles.controls}>
+        <View pointerEvents="box-none" style={styles.controls}>
           <MapLayersControl
             enabled={explorationEnabled}
             onChange={setExplorationEnabled}
@@ -202,11 +243,6 @@ export default function MapScreenBody() {
             theme={theme}
           />
         </View>
-      </View>
-      <View
-        pointerEvents="box-none"
-        style={[styles.islandLayer, { paddingBottom: islandBottomPadding }]}
-      >
         {selectedHistory ? (
           <FriendHistoryIsland
             friend={selectedHistory}
@@ -215,7 +251,12 @@ export default function MapScreenBody() {
             theme={theme}
           />
         ) : (
-          <CoverageIsland coverage={readout.coverage} placeName={readout.placeName} theme={theme} />
+          <CoverageIsland
+            coverage={readout.coverage}
+            placeName={readout.placeName}
+            sectorsVisible={readout.sectorsVisible}
+            theme={theme}
+          />
         )}
       </View>
     </View>
@@ -292,12 +333,19 @@ const styles = StyleSheet.create({
     right: Spacing.three,
     bottom: 0,
   },
-  controlsLayer: {
-    position: 'absolute',
-    right: Spacing.three,
-  },
   controls: {
     alignItems: 'flex-end',
     gap: Spacing.two,
+    marginBottom: Spacing.three,
+  },
+  attributionLayer: {
+    position: 'absolute',
+    left: Spacing.three,
+  },
+  attribution: {
+    fontFamily: 'IBMPlexMono_500Medium',
+    fontSize: 10,
+    letterSpacing: 1.2,
+    opacity: 0.55,
   },
 });
