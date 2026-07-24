@@ -19,7 +19,13 @@ use iroh_location::{LocationNode, PairEventKind, PairState, SasRoleKind};
 const SIGIL: &str = "/\\_/\\\n(o.o)";
 async fn start_node() -> Arc<LocationNode> {
     let node = LocationNode::new(None, None).expect("construct node");
-    node.start(vec!["https://127.0.0.1:1".into()], "test-token".into())
+    node.start(
+        vec!["https://127.0.0.1:1".into()],
+        "test-token".into(),
+        true,
+        true,
+        true,
+    )
         .await
         .expect("start node");
     node
