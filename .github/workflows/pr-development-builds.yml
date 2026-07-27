@@ -18,6 +18,9 @@ env:
   CI: '1'
   EXPO_NO_TELEMETRY: '1'
   EAS_CLI_VERSION: 21.0.3
+  # Registered only so GitHub redacts the tailnet name that the Tailscale action
+  # prints while configuring MagicDNS on the macOS runner. Not a credential.
+  TS_TAILNET: ${{ secrets.TS_TAILNET }}
 
 jobs:
   build_ios:
@@ -137,12 +140,11 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
           # Bland fixed node name so the tailnet admin view shows nothing
-          # identifying, and no `tailscale status` is ever run.
+          # identifying, and no `tailscale status` is ever run. MagicDNS stays on
+          # (the internal host resolves through the tailnet); the tailnet name the
+          # action prints while configuring DNS is redacted by the TS_TAILNET
+          # secret registered in the top-level env.
           hostname: ci-ephemeral
-          # We reach the host via public DNS (not MagicDNS), so don't let the
-          # action reconfigure system DNS — that step otherwise prints the tailnet
-          # name (the *.ts.net domain) into the public logs on macOS.
-          args: --accept-dns=false
 
       - name: Upload the build to the internal distribution server
         id: upload
@@ -309,12 +311,11 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
           # Bland fixed node name so the tailnet admin view shows nothing
-          # identifying, and no `tailscale status` is ever run.
+          # identifying, and no `tailscale status` is ever run. MagicDNS stays on
+          # (the internal host resolves through the tailnet); the tailnet name the
+          # action prints while configuring DNS is redacted by the TS_TAILNET
+          # secret registered in the top-level env.
           hostname: ci-ephemeral
-          # We reach the host via public DNS (not MagicDNS), so don't let the
-          # action reconfigure system DNS — that step otherwise prints the tailnet
-          # name (the *.ts.net domain) into the public logs on macOS.
-          args: --accept-dns=false
 
       - name: Upload the build to the internal distribution server
         id: upload
