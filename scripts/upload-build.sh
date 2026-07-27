@@ -80,10 +80,16 @@ case "$install_url" in
     ;;
 esac
 
-# Hand the link forward as a masked step output (never printed). The notify job
-# aggregates both platforms into one threaded Discord reply per commit.
+# Hand the link forward via a step output. GitHub SCRUBS job outputs that
+# contain a secret, and the full URL contains the (secret) base URL — so emit
+# only the non-secret path (e.g. /get/<id>). The notify job rebuilds the full
+# URL from DISTRIBUTOR_BASE_URL + this path. Deliberately NOT masked: a masked
+# value would also be scrubbed from the output; the path is never printed to a
+# log anyway (this step's output is suppressed, and it only lands in
+# $GITHUB_OUTPUT, which is not echoed).
+install_path="${install_url#"$base_url"}"
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  printf 'install_url=%s\n' "$install_url" >> "$GITHUB_OUTPUT"
+  printf 'install_path=%s\n' "$install_path" >> "$GITHUB_OUTPUT"
 fi
 
 echo "Uploaded the $platform build."

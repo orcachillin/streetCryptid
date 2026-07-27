@@ -237,9 +237,15 @@ for needle in \
   fi
 done
 
-# The install URL must be handed onward via $GITHUB_OUTPUT (for the notify job).
-if ! grep -Fq "install_url=$install_url" "$build_output"; then
-  echo "upload-build.sh did not write the masked install URL to GITHUB_OUTPUT." >&2
+# The non-secret install PATH must be handed onward via $GITHUB_OUTPUT (the full
+# URL can't be — GitHub scrubs secret-containing cross-job outputs).
+if ! grep -Fq "install_path=/get/abc123def456" "$build_output"; then
+  echo "upload-build.sh did not write the install path to GITHUB_OUTPUT." >&2
+  exit 1
+fi
+# ...and the full URL (with the secret host) must NOT be written to the output.
+if grep -Fq "$install_url" "$build_output"; then
+  echo "upload-build.sh wrote the full (secret-bearing) URL to GITHUB_OUTPUT." >&2
   exit 1
 fi
 
@@ -280,7 +286,8 @@ thread_out="$test_root/thread-id-out"
 
 # Fake curl for Discord: the create call carries wait=true and returns a
 # channel_id; the reply call carries thread_id= and records its posted body.
-# Both receive their JSON payload on stdin (--data-binary @-).
+# Both receive their JSON payload on stdin (--data-binary @-) and, like the real
+# --write-out '\n%{http_code}', emit "<body>\n<status>".
 cat > "$test_root/bin/curl" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -290,10 +297,11 @@ body="\$(cat)"
 case "\$url" in
   *"thread_id="*)
     printf '%s' "\$body" > "$thread_body"
+    printf '\n204'
     exit 0
     ;;
   *"wait=true"*)
-    printf '{"channel_id":"$new_thread"}'
+    printf '{"channel_id":"$new_thread"}\n200'
     exit 0
     ;;
 esac

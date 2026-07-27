@@ -61,13 +61,22 @@ reply="$(
   platform_line '🤖' 'Android' "${ANDROID_RESULT:-}" "${ANDROID_URL:-}"
 )"
 
-post() {
-  # post <url>  — JSON payload is read from stdin (robust across platforms and
-  # safe for UTF-8), and curl is kept quiet so nothing can echo a URL.
-  curl --fail --silent --show-error \
+# Append a REDACTED diagnostic (HTTP status / stage only — never a URL, host,
+# webhook, or response body) for the caller to surface on failure.
+diag() {
+  [[ -n "${NOTIFY_DIAG_FILE:-}" ]] && printf '%s\n' "$1" >>"$NOTIFY_DIAG_FILE" || true
+}
+
+# http_post <url> : reads the JSON payload from stdin (robust across platforms,
+# safe for UTF-8) and prints "<response-body>\n<http_code>". Kept quiet so
+# nothing can echo a URL. The caller splits off the trailing status line — doing
+# it here would be lost, since a piped function runs in a subshell.
+http_post() {
+  curl --silent --show-error \
     --header 'Content-Type: application/json' \
     --data-binary @- \
-    "$1"
+    --write-out $'\n%{http_code}' \
+    "$1" 2>/dev/null
 }
 
 thread_id="${DISCORD_THREAD_ID:-}"
@@ -87,23 +96,37 @@ if [[ -z "$thread_id" ]]; then
   create_payload="$(jq -nc --arg name "$thread_name" --arg content "$root" \
     '{thread_name: $name, content: $content}')"
 
-  if ! response="$(printf '%s' "$create_payload" | post "${DISCORD_WEBHOOK_URL}?wait=true" 2>/dev/null)"; then
-    echo "Failed to create the Discord forum thread (is the channel a Forum channel?)." >&2
-    exit 1
-  fi
+  out="$(printf '%s' "$create_payload" | http_post "${DISCORD_WEBHOOK_URL}?wait=true")" || true
+  code="${out##*$'\n'}"
+  response="${out%$'\n'*}"
+  case "$code" in
+    2*) ;;
+    *)
+      diag "thread create failed: HTTP ${code:-000}"
+      echo "Failed to create the Discord forum thread (is the channel a Forum channel?)." >&2
+      exit 1
+      ;;
+  esac
 
   thread_id="$(printf '%s' "$response" | jq -r '.channel_id // empty' 2>/dev/null || true)"
   if [[ -z "$thread_id" ]]; then
+    diag "thread create: no channel_id in response (HTTP $code)"
     echo "Discord did not return a thread id (is the webhook channel a Forum channel?)." >&2
     exit 1
   fi
 fi
 
 reply_payload="$(jq -nc --arg content "$reply" '{content: $content}')"
-if ! printf '%s' "$reply_payload" | post "${DISCORD_WEBHOOK_URL}?thread_id=${thread_id}" >/dev/null 2>&1; then
-  echo "Failed to post the build reply into the Discord thread." >&2
-  exit 1
-fi
+out="$(printf '%s' "$reply_payload" | http_post "${DISCORD_WEBHOOK_URL}?thread_id=${thread_id}")" || true
+code="${out##*$'\n'}"
+case "$code" in
+  2*) ;;
+  *)
+    diag "thread reply failed: HTTP ${code:-000}"
+    echo "Failed to post the build reply into the Discord thread." >&2
+    exit 1
+    ;;
+esac
 
 # Hand the thread id back for persistence (it is a channel snowflake, not a
 # secret, but it is never printed to keep the logs clean).
