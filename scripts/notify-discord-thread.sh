@@ -22,6 +22,22 @@
 set -euo pipefail
 umask 077
 
+# Guarantee no failure is ever silent. Every labeled failure below writes its own
+# redacted diagnostic; this backstop catches an unexpected `set -e` death (e.g. a
+# missing required var, before any labeled stage is reached) so the caller always
+# gets a reason. It only ever emits an exit status — never a URL, host, or
+# webhook — so it keeps the public-log hygiene the isolation test enforces.
+on_notify_exit() {
+  local status=$?
+  [[ "$status" -eq 0 ]] && return
+  if [[ -n "${NOTIFY_DIAG_FILE:-}" && ! -s "$NOTIFY_DIAG_FILE" ]]; then
+    printf 'notify exited with status %s before any labeled stage (check DISCORD_WEBHOOK_URL / PR_NUMBER are set)\n' \
+      "$status" >>"$NOTIFY_DIAG_FILE" 2>/dev/null || true
+  fi
+  echo "Discord notify script exited with status $status." >&2
+}
+trap on_notify_exit EXIT
+
 : "${DISCORD_WEBHOOK_URL:?DISCORD_WEBHOOK_URL must be set}"
 : "${PR_NUMBER:?PR_NUMBER must be set}"
 
