@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Build a standalone app archive locally on the CI runner with `eas build
+# --local` (no EAS cloud build credits consumed). The finished .ipa/.apk is left
+# at $artifact; publishing it to the internal distribution server is a separate
+# step (scripts/upload-build.sh), so this script never touches the network
+# beyond the credential fetch EAS needs to sign the build.
+
 set -euo pipefail
 umask 077
 
@@ -25,7 +31,6 @@ if [[ -z "${EXPO_TOKEN:-}" ]]; then
   exit 1
 fi
 
-: "${GITHUB_OUTPUT:?GITHUB_OUTPUT must be set}"
 : "${RUNNER_TEMP:?RUNNER_TEMP must be set}"
 
 case "$artifact" in
@@ -77,28 +82,4 @@ if [[ ! -f "$artifact" ]]; then
   exit 1
 fi
 
-if ! upload_result="$(
-  run_eas_privately upload \
-    --platform "$platform" \
-    --build-path "$artifact" \
-    --non-interactive \
-    --json \
-    2>/dev/null
-)"; then
-  echo "EAS $platform upload failed. Expo output was withheld because it can contain signing credentials." >&2
-  exit 1
-fi
-
-if ! install_url="$(jq -er '.url | strings' <<<"$upload_result" 2>/dev/null)"; then
-  unset upload_result
-  echo "EAS upload returned an unreadable result. Expo output was withheld." >&2
-  exit 1
-fi
-unset upload_result
-build_url_pattern='^https://expo\.dev/accounts/[A-Za-z0-9._-]+/projects/[A-Za-z0-9._-]+/builds/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-if [[ ! "$install_url" =~ $build_url_pattern ]]; then
-  echo "EAS upload returned an unexpected install URL. Expo output was withheld." >&2
-  exit 1
-fi
-
-printf 'url=%s\n' "$install_url" >> "$GITHUB_OUTPUT"
+echo "Local $platform build complete."

@@ -29,8 +29,11 @@ jobs:
     environment: development-builds
     permissions:
       contents: read
+    # Masked install URL handed to the notify job so it can post one combined,
+    # threaded Discord reply per commit. Job outputs are not echoed to logs and
+    # are not exposed via the public REST API.
     outputs:
-      install_url: ${{ steps.upload.outputs.url }}
+      install_url: ${{ steps.upload.outputs.install_url }}
     env:
       EAS_BUILD_GIT_COMMIT_HASH: ${{ github.event.pull_request.head.sha }}
       EAS_LOCAL_BUILD_SKIP_CLEANUP: '0'
@@ -113,8 +116,7 @@ jobs:
       - name: Verify EAS log isolation
         run: bash scripts/test-eas-ci-log-isolation.sh
 
-      - name: Build locally and upload the IPA to EAS
-        id: upload
+      - name: Build the standalone Release locally
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -124,6 +126,36 @@ jobs:
             ios \
             production-internal-ios \
             "$BUILD_ARTIFACT"
+
+      # Join the tailnet so the internal distribution host is reachable. The
+      # ephemeral node is torn down at job end. Nothing prints the tailnet
+      # topology (no `tailscale status`), keeping it off the public logs.
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4.1.3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          # Bland fixed node name so neither the logs nor the tailnet admin view
+          # show anything identifying. The action's own output is benign (version
+          # + download + "connected"); the tailnet topology only ever leaks from
+          # an explicit `tailscale status`, which this workflow never runs.
+          hostname: ci-ephemeral
+
+      - name: Upload the build to the internal distribution server
+        id: upload
+        env:
+          DISTRIBUTOR_BASE_URL: ${{ secrets.DISTRIBUTOR_BASE_URL }}
+          DISTRIBUTOR_TOKEN: ${{ secrets.DISTRIBUTOR_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Suppress all output: the install URL and internal host must not reach
+          # the public logs. The masked URL is written to $GITHUB_OUTPUT for the
+          # notify job to post to Discord.
+          if ! bash scripts/upload-build.sh ios "$BUILD_ARTIFACT" >/dev/null 2>&1; then
+            echo "Uploading the build to the internal distribution server failed." >&2
+            exit 1
+          fi
 
       - name: Remove local build state
         if: always()
@@ -156,8 +188,11 @@ jobs:
     environment: development-builds
     permissions:
       contents: read
+    # Masked install URL handed to the notify job so it can post one combined,
+    # threaded Discord reply per commit. Job outputs are not echoed to logs and
+    # are not exposed via the public REST API.
     outputs:
-      install_url: ${{ steps.upload.outputs.url }}
+      install_url: ${{ steps.upload.outputs.install_url }}
     env:
       EAS_BUILD_GIT_COMMIT_HASH: ${{ github.event.pull_request.head.sha }}
       EAS_LOCAL_BUILD_SKIP_CLEANUP: '0'
@@ -251,8 +286,7 @@ jobs:
       - name: Verify EAS log isolation
         run: bash scripts/test-eas-ci-log-isolation.sh
 
-      - name: Build locally and upload the APK to EAS
-        id: upload
+      - name: Build the standalone Release locally
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -262,6 +296,36 @@ jobs:
             android \
             production-internal-android \
             "$BUILD_ARTIFACT"
+
+      # Join the tailnet so the internal distribution host is reachable. The
+      # ephemeral node is torn down at job end. Nothing prints the tailnet
+      # topology (no `tailscale status`), keeping it off the public logs.
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4.1.3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          # Bland fixed node name so neither the logs nor the tailnet admin view
+          # show anything identifying. The action's own output is benign (version
+          # + download + "connected"); the tailnet topology only ever leaks from
+          # an explicit `tailscale status`, which this workflow never runs.
+          hostname: ci-ephemeral
+
+      - name: Upload the build to the internal distribution server
+        id: upload
+        env:
+          DISTRIBUTOR_BASE_URL: ${{ secrets.DISTRIBUTOR_BASE_URL }}
+          DISTRIBUTOR_TOKEN: ${{ secrets.DISTRIBUTOR_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Suppress all output: the install URL and internal host must not reach
+          # the public logs. The masked URL is written to $GITHUB_OUTPUT for the
+          # notify job to post to Discord.
+          if ! bash scripts/upload-build.sh android "$BUILD_ARTIFACT" >/dev/null 2>&1; then
+            echo "Uploading the build to the internal distribution server failed." >&2
+            exit 1
+          fi
 
       - name: Remove local build state
         if: always()
@@ -285,8 +349,8 @@ jobs:
             rm -f -- "$BUILD_ARTIFACT"
           fi
 
-  comment:
-    name: Post install links
+  notify:
+    name: Notify build thread
     if: >-
       ${{
         always() &&
@@ -307,36 +371,73 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       IOS_RESULT: ${{ needs.build_ios.result }}
-      IOS_URL: ${{ needs.build_ios.outputs.install_url }}
       ANDROID_RESULT: ${{ needs.build_android.result }}
+      IOS_URL: ${{ needs.build_ios.outputs.install_url }}
       ANDROID_URL: ${{ needs.build_android.outputs.install_url }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
-      - name: Comment with EAS install pages
+      # Posts one combined build reply into the PR's Discord forum thread
+      # (creating it on the first commit). Install links go ONLY to Discord; the
+      # PR comment carries no link or host — just build status and the hidden
+      # thread-id marker used to reuse the same thread on later commits.
+      - name: Notify the PR build thread
         run: |
           set -euo pipefail
 
-          platform_line() {
-            local platform="$1"
-            local result="$2"
-            local url="$3"
-            if [[ "$result" == "success" && -n "$url" ]]; then
-              printf -- '- **%s:** [Install from EAS (QR code)](%s)\n' "$platform" "$url"
-            else
-              printf -- '- **%s:** Build failed — [view GitHub Actions logs](%s)\n' "$platform" "$RUN_URL"
-            fi
-          }
+          marker='<!-- streetcryptid-builds -->'
 
-          body="$(
-            printf '🏗️ **PR standalone Release builds**\n\n'
-            platform_line "iOS" "$IOS_RESULT" "$IOS_URL"
-            platform_line "Android" "$ANDROID_RESULT" "$ANDROID_URL"
-            printf '\nBuilt on ephemeral GitHub-hosted runners; EAS only hosts the finished app archives.'
+          # Find our existing status comment and any thread id stored in it.
+          comments="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100")"
+          comment_id="$(jq -r --arg m "$marker" 'map(select(.body | contains($m)))[0].id // empty' <<<"$comments")"
+          existing_thread="$(
+            jq -r --arg m "$marker" 'map(select(.body | contains($m)))[0].body // ""' <<<"$comments" |
+              sed -n 's/.*<!-- disc-thread:\([0-9]\{1,\}\) -->.*/\1/p'
           )"
 
-          gh api \
-            --method POST \
-            "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-            --raw-field body="$body" \
-            >/dev/null
+          # Post to Discord with all output suppressed — no URL, host, or webhook
+          # may reach the public logs. The resulting thread id comes back in a file.
+          tid_file="$RUNNER_TEMP/discord-thread-id"
+          : > "$tid_file"
+          discord_ok=1
+          if ! DISCORD_THREAD_ID="$existing_thread" DISCORD_THREAD_ID_OUT="$tid_file" \
+                bash scripts/notify-discord-thread.sh >/dev/null 2>&1; then
+            discord_ok=0
+          fi
+          thread_id="$(cat "$tid_file" 2>/dev/null || true)"
+          [[ -z "$thread_id" ]] && thread_id="$existing_thread"
+
+          # PR status comment: no links, no host — status plus the hidden thread
+          # marker so the next commit reuses this thread.
+          platform_line() {
+            if [[ "$2" == "success" ]]; then
+              printf -- '- **%s:** ✅ ready — install link in the team channel thread\n' "$1"
+            else
+              printf -- '- **%s:** ❌ build failed — [logs](%s)\n' "$1" "$RUN_URL"
+            fi
+          }
+          body="$(
+            printf '%s<!-- disc-thread:%s -->\n' "$marker" "$thread_id"
+            printf '🏗️ **PR standalone Release builds**\n\n'
+            platform_line "iOS" "$IOS_RESULT"
+            platform_line "Android" "$ANDROID_RESULT"
+            printf '\nInstall links are posted to the private team channel thread for this PR and kept off this public repo.'
+            if [[ "$discord_ok" -ne 1 ]]; then
+              printf '\n\n_⚠️ Could not reach the Discord build thread this run._'
+            fi
+          )"
+
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" --raw-field body="$body" >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --raw-field body="$body" >/dev/null
+          fi
+
+          if [[ "$discord_ok" -ne 1 ]]; then
+            echo "Failed to notify the Discord build thread." >&2
+            exit 1
+          fi
