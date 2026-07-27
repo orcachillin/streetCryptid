@@ -136,11 +136,13 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
-          # Bland fixed node name so neither the logs nor the tailnet admin view
-          # show anything identifying. The action's own output is benign (version
-          # + download + "connected"); the tailnet topology only ever leaks from
-          # an explicit `tailscale status`, which this workflow never runs.
+          # Bland fixed node name so the tailnet admin view shows nothing
+          # identifying, and no `tailscale status` is ever run.
           hostname: ci-ephemeral
+          # We reach the host via public DNS (not MagicDNS), so don't let the
+          # action reconfigure system DNS — that step otherwise prints the tailnet
+          # name (the *.ts.net domain) into the public logs on macOS.
+          args: --accept-dns=false
 
       - name: Upload the build to the internal distribution server
         id: upload
@@ -306,11 +308,13 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
-          # Bland fixed node name so neither the logs nor the tailnet admin view
-          # show anything identifying. The action's own output is benign (version
-          # + download + "connected"); the tailnet topology only ever leaks from
-          # an explicit `tailscale status`, which this workflow never runs.
+          # Bland fixed node name so the tailnet admin view shows nothing
+          # identifying, and no `tailscale status` is ever run.
           hostname: ci-ephemeral
+          # We reach the host via public DNS (not MagicDNS), so don't let the
+          # action reconfigure system DNS — that step otherwise prints the tailnet
+          # name (the *.ts.net domain) into the public logs on macOS.
+          args: --accept-dns=false
 
       - name: Upload the build to the internal distribution server
         id: upload
@@ -365,6 +369,8 @@ jobs:
       - build_ios
       - build_android
     runs-on: ubuntu-24.04
+    # Required to read DISCORD_WEBHOOK_URL, which is an environment secret.
+    environment: development-builds
     timeout-minutes: 5
     permissions:
       pull-requests: write
