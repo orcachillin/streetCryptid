@@ -53,8 +53,6 @@ jobs:
             echo "BUILD_ARTIFACT=$RUNNER_TEMP/streetcryptid-pr-$PR_NUMBER.ipa"
             echo "EAS_LOCAL_BUILD_ARTIFACTS_DIR=$RUNNER_TEMP/eas-artifacts-ios"
             echo "EAS_LOCAL_BUILD_WORKINGDIR=$RUNNER_TEMP/eas-local-build-ios"
-            echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/modules/iroh-location/rust/target"
-            echo "RUSTUP_TOOLCHAIN=stable"
           } >> "$GITHUB_ENV"
 
       - name: Check out PR revision
@@ -73,15 +71,12 @@ jobs:
         with:
           bun-version: 1.3.14
 
+      # Restore-only: cache-warm.yml populates these on main, where every pull request can read
+      # them. See .github/actions/eas-js-cache/action.yml.
       - name: Restore JavaScript package caches
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: ./.github/actions/eas-js-cache
         with:
-          path: |
-            ~/.bun/install/cache
-            ~/.npm/_cacache
-          key: eas-local-js-${{ runner.os }}-${{ runner.arch }}-${{ env.EAS_CLI_VERSION }}-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            eas-local-js-${{ runner.os }}-${{ runner.arch }}-${{ env.EAS_CLI_VERSION }}-
+          eas-cli-version: ${{ env.EAS_CLI_VERSION }}
 
       - name: Install project dependencies
         run: bun install --frozen-lockfile
@@ -89,18 +84,16 @@ jobs:
       - name: Select the SDK 57 Xcode toolchain
         run: sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
 
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --no-self-update
-
       - name: Restore Rust build cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: ./.github/actions/eas-rust-cache
         with:
-          workspaces: modules/iroh-location/rust -> target
-          key: eas-local-${{ hashFiles('scripts/eas-build-pre-install.sh', 'scripts/generate-uniffi-bindings.sh', 'modules/iroh-location/rust/src/**/*.rs', 'modules/iroh-location/rust/third_party/**/*.rs') }}
-          cache-workspace-crates: 'true'
+          platform: ios
 
+      # Only `eas build --local` populates ~/Library/Caches/CocoaPods, and that never runs on main,
+      # so this entry stays PR-scoped and warms reruns of this pull request only.
       - name: Restore CocoaPods download cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cocoapods-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/CocoaPods
           key: eas-local-cocoapods-${{ runner.os }}-${{ hashFiles('bun.lock', 'package.json', 'app.json', 'app.config.ts', 'modules/iroh-location/ios/IrohLocation.podspec') }}
@@ -124,6 +117,15 @@ jobs:
             ios \
             production-internal-ios \
             "$BUILD_ARTIFACT"
+
+      # actions/cache's own post step is `post-if: success()`, so a 40-minute build that fails
+      # would otherwise discard the pod downloads it just made and leave the retry cold.
+      - name: Save CocoaPods download cache
+        if: "!cancelled() && steps.cocoapods-cache.outputs.cache-hit != 'true'"
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: ${{ steps.cocoapods-cache.outputs.cache-primary-key }}
 
       - name: Remove local build state
         if: always()
@@ -179,8 +181,6 @@ jobs:
             echo "BUILD_ARTIFACT=$RUNNER_TEMP/streetcryptid-pr-$PR_NUMBER.apk"
             echo "EAS_LOCAL_BUILD_ARTIFACTS_DIR=$RUNNER_TEMP/eas-artifacts-android"
             echo "EAS_LOCAL_BUILD_WORKINGDIR=$RUNNER_TEMP/eas-local-build-android"
-            echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/modules/iroh-location/rust/target"
-            echo "RUSTUP_TOOLCHAIN=stable"
           } >> "$GITHUB_ENV"
 
       - name: Check out PR revision
@@ -199,15 +199,12 @@ jobs:
         with:
           bun-version: 1.3.14
 
+      # Restore-only: cache-warm.yml populates these on main, where every pull request can read
+      # them. See .github/actions/eas-js-cache/action.yml.
       - name: Restore JavaScript package caches
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: ./.github/actions/eas-js-cache
         with:
-          path: |
-            ~/.bun/install/cache
-            ~/.npm/_cacache
-          key: eas-local-js-${{ runner.os }}-${{ runner.arch }}-${{ env.EAS_CLI_VERSION }}-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            eas-local-js-${{ runner.os }}-${{ runner.arch }}-${{ env.EAS_CLI_VERSION }}-
+          eas-cli-version: ${{ env.EAS_CLI_VERSION }}
 
       - name: Install project dependencies
         run: bun install --frozen-lockfile
@@ -223,18 +220,16 @@ jobs:
             echo "ANDROID_NDK_ROOT=$ndk_home"
           } >> "$GITHUB_ENV"
 
-      - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --no-self-update
-
       - name: Restore Rust build cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: ./.github/actions/eas-rust-cache
         with:
-          workspaces: modules/iroh-location/rust -> target
-          key: eas-local-${{ hashFiles('scripts/eas-build-pre-install.sh', 'scripts/generate-uniffi-bindings.sh', 'modules/iroh-location/rust/src/**/*.rs', 'modules/iroh-location/rust/third_party/**/*.rs') }}
-          cache-workspace-crates: 'true'
+          platform: android
 
+      # Only `eas build --local` populates ~/.gradle/caches, and that never runs on main, so this
+      # entry stays PR-scoped and warms reruns of this pull request only.
       - name: Restore Gradle dependency cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: gradle-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.gradle/caches/modules-2
@@ -262,6 +257,19 @@ jobs:
             android \
             production-internal-android \
             "$BUILD_ARTIFACT"
+
+      # actions/cache's own post step is `post-if: success()`, so a 40-minute build that fails
+      # would otherwise discard the Gradle downloads it just made and leave the retry cold.
+      - name: Save Gradle dependency cache
+        if: "!cancelled() && steps.gradle-cache.outputs.cache-hit != 'true'"
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/caches/jars-*
+            ~/.gradle/caches/transforms-*
+            ~/.gradle/wrapper
+          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
 
       - name: Remove local build state
         if: always()
