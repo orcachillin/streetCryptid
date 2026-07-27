@@ -1,0 +1,45 @@
+name: EAS local build JavaScript cache
+description: Restore (and, on main, save) the Bun and npm download caches used by `eas build --local`.
+
+# Keeping the key in one place matters: a cache is only restorable from the ref that wrote it plus
+# its parents, so the entry a pull_request run can actually hit is the one main wrote. If the warm
+# job and the build job spell the key differently, every build run misses.
+#
+# ~/.npm/_cacache is only populated by `eas build --local` (Expo autolinking and pod tooling shell
+# out to npm), which the warm job does not run, so main's entry carries the Bun cache alone. It
+# stays in the path list so a pull request that does write one keeps it for its own reruns.
+inputs:
+  eas-cli-version:
+    description: EAS CLI version installed by the caller; it lands in the npm cache contents.
+    required: true
+  save:
+    description: >-
+      Whether to write the cache. Only the main-branch warm job should set this: a pull_request run
+      writes into its own refs/pull/<n>/merge scope, which no other pull request can read.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Restore the JavaScript package caches
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.bun/install/cache
+          ~/.npm/_cacache
+        key: eas-local-js-${{ runner.os }}-${{ runner.arch }}-${{ inputs.eas-cli-version }}-${{ hashFiles('bun.lock') }}
+        restore-keys: |
+          eas-local-js-${{ runner.os }}-${{ runner.arch }}-${{ inputs.eas-cli-version }}-
+
+    - name: Restore and save the JavaScript package caches
+      if: inputs.save == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.bun/install/cache
+          ~/.npm/_cacache
+        key: eas-local-js-${{ runner.os }}-${{ runner.arch }}-${{ inputs.eas-cli-version }}-${{ hashFiles('bun.lock') }}
+        restore-keys: |
+          eas-local-js-${{ runner.os }}-${{ runner.arch }}-${{ inputs.eas-cli-version }}-

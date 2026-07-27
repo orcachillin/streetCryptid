@@ -179,6 +179,17 @@ uploaded as GitHub artifacts, and are explicitly removed after the final app arc
 to EAS. Only package-manager downloads and Cargo compiler outputs are cached; generated native
 projects, app archives, keychains, provisioning profiles, and other EAS state remain excluded.
 
+An Actions cache is readable only from the ref that wrote it and that ref's ancestors, so caches
+written by a `pull_request` run are invisible to every other PR while still counting against the
+repository's 10 GB budget. `cache-warm.yml` therefore runs the Cargo and package-manager half of
+these builds on `main` — no `eas build --local`, no credentials — and the PR build jobs restore
+those caches without writing their own. Both sides go through
+`.github/actions/eas-rust-cache`, which owns `CARGO_TARGET_DIR` and `RUSTUP_TOOLCHAIN`: rust-cache
+hashes those variables and the `key` input into its _restore_ prefix, so any drift between the two
+workflows — or a source-file hash in the key — silently turns every restore into a miss. The
+CocoaPods and Gradle caches are the exception: only `eas build --local` fills them, so they stay
+PR-scoped and are saved even when a build fails late, which warms reruns of that same PR.
+
 EAS CLI serializes the local build job, including signing credentials, into a base64 child-process
 argument. Debug/error output can therefore be sensitive. The CI wrapper never forwards any
 `eas build` output to GitHub or disk, and it captures `eas upload` output only in memory. Failures
