@@ -30,7 +30,6 @@ import { buildTransportReport, type TransportReport } from '@/features/social/ne
 import {
   ensureLocalNetworkPermission,
   ensurePairingPermissions,
-  hasPairingPermissions,
 } from '@/features/social/net/pairing-permissions';
 
 export type LocationRuntimeStatus =
@@ -269,7 +268,20 @@ export function LocationSharingProvider({ children }: PropsWithChildren) {
         if (!sharedServiceInit) {
           sharedServiceInit = (async () => {
             await ensureLocalNetworkPermission();
-            bluetoothPermissionGranted.current = await hasPairingPermissions();
+            // REQUEST Bluetooth here (not just check), for two reasons:
+            //
+            // 1. The BLE transport attaches when the native node is CONSTRUCTED, so a grant that
+            //    arrives later leaves BLE detached until an explicit `ensureBleReady()` rebind.
+            //    Asking before `init` means the common path needs no rebind at all.
+            // 2. It breaks a deadlock. The only other prompt lives behind the Bump button, and the
+            //    strip hides that button whenever BLE reports unavailable — which is exactly what
+            //    ungranted permissions cause. A phone that had never been asked could therefore
+            //    never reach the ask, and just showed "Bluetooth is not available on this device
+            //    or build" forever.
+            //
+            // Cheap to repeat: once decided, `requestMultiple` resolves from the stored grant
+            // without showing UI, same as the local-network request above.
+            bluetoothPermissionGranted.current = await ensurePairingPermissions();
             await service.init(
               initialProfile.handle,
               initialProfile.sigil,

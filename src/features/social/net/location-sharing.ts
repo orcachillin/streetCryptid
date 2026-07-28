@@ -1214,6 +1214,10 @@ export class LocationSharingService implements FixPublisher {
       this.recordLocalFix(fix);
       const seq = await this.publishFix(fix, span.context);
       span.setAttribute('sc.seq', seq);
+      // Push too, or this diagnostic lies: `publishFix` alone leaves the envelope in the local
+      // replica, so the ping it claims you can "follow end to end" would stop at this device and
+      // reproduce the very bug you'd be using it to chase.
+      await this.pushTrail(span.context);
       span.setStatus('ok');
       return seq;
     } catch (error) {
@@ -1260,6 +1264,50 @@ export class LocationSharingService implements FixPublisher {
     this.lastSyncRecovered = recovered;
     this.notifyTrailChanged();
     this.emit();
+  }
+
+  /**
+   * Push our own durable trail to the stash. **Call this after publishing**, or the fixes stay on
+   * this device: `docsWrite` writes the local replica, and iroh-docs only broadcasts a local insert
+   * for namespaces `start_sync` has marked as syncing — which nothing in a publish-only context
+   * does. Without it an offline friend has nothing to reconcile from, which is invisible while both
+   * phones are online (live gossip covers it) and total when they aren't.
+   *
+   * Best-effort and cheap to repeat: once the namespace is syncing, later writes broadcast on their
+   * own for the lifetime of the process. No-op when the stash is off (peer-only reconciliation) or
+   * when running against an older iOS binary whose bindings predate `pushTrail`.
+   */
+  async pushTrail(parent?: SpanContext): Promise<void> {
+    if (!this.mod) return;
+    if (!this.stashEnabled()) return;
+    // iOS bindings only regenerate on macOS; guard rather than crash on a stale binary.
+    if (typeof this.mod.pushTrail !== 'function') return;
+    const span = getTelemetry().startSpan('trail.push.app', {
+      parent,
+      attributes: {
+        'sc.author': this.keys ? this.keys.endpointId.slice(0, 10) : undefined,
+        stash: true,
+      },
+    });
+    try {
+      await this.mod.pushTrail(
+        this.stashTicket,
+        getTelemetry().enabled ? traceparentFor(span.context) : null
+      );
+      span.setStatus('ok');
+    } catch (err) {
+      // A failure means these fixes only reach friends who are online now — exactly the gap the
+      // stash exists to close — so log it, don't swallow it silently.
+      const reason = err instanceof Error ? err.message : String(err);
+      span.addEvent('native.push.failed', { reason });
+      getTelemetry().log(
+        'warn',
+        `trail push failed (fixes not mirrored to the stash; offline friends won't see them): ${reason}`
+      );
+      span.setStatus('error', reason);
+    } finally {
+      span.end();
+    }
   }
 
   /**
@@ -1376,9 +1424,12 @@ export class LocationSharingService implements FixPublisher {
       // (the location foreground service), so the periodic task must reuse this node — spinning up a
       // second one calls createNode → clearRuntime() and tears this node's subscriptions down,
       // silently stopping send + live receive until relaunch.
+      // Drain BEFORE syncing: `syncTrail` is the only thing that pushes our own namespace to the
+      // stash, so flushing after it would leave everything this wake published stranded until the
+      // next OS wake (~15 min at best, and iOS may skip many).
       this.bgBackfillHandlerStop = registerActiveBackfillHandler(async (parent) => {
-        await this.syncTrail(0, parent);
         await this.engine?.flush(parent);
+        await this.syncTrail(0, parent);
       });
 
       this.bgProvider = new Provider();
@@ -1589,6 +1640,12 @@ export class LocationSharingService implements FixPublisher {
           // A single bad card shouldn't block restoring the rest.
         }
       }
+    } else {
+      // Headless: no gossip subscriptions (nothing is listening), but we still MUST re-open the
+      // friends' trail namespaces. Native `syncTrail` reconciles the namespaces in its handle
+      // cache, and a fresh process starts with only our own in it — so without this the periodic
+      // backfill silently syncs nothing but our own trail and can never recover a friend's fixes.
+      await this.importFriendTrails();
     }
     if (this.state.sharingWith.length > 0) {
       try {
@@ -1597,6 +1654,28 @@ export class LocationSharingService implements FixPublisher {
         // ignore
       }
     }
+  }
+
+  /**
+   * Re-import every friend's docs read-ticket so their trail namespace is open in the native
+   * handle cache. Idempotent (iroh-docs re-imports the capability for a namespace it already has)
+   * and cheap — it's the replication half of a grant, with no gossip membership.
+   */
+  private async importFriendTrails(): Promise<void> {
+    if (!this.mod) return;
+    const span = getTelemetry().startSpan('trail.rehydrate');
+    let imported = 0;
+    for (const friend of pool.friendList(this.state)) {
+      if (!friend.docTicket) continue;
+      try {
+        await this.mod.importDocTicket(friend.docTicket);
+        imported += 1;
+      } catch {
+        // Non-fatal: only this friend's offline recovery is affected.
+      }
+    }
+    span.setAttributes({ friends: pool.friendList(this.state).length, imported });
+    span.end();
   }
 
   /** Persist the current pool (fire-and-forget; best-effort). */

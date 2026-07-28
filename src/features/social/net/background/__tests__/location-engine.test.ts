@@ -38,15 +38,26 @@ function fakeOutbox(): FixOutbox {
   };
 }
 
-function fakePublisher(): FixPublisher & { setReady: (r: boolean) => void; seqs: number[] } {
+function fakePublisher(): FixPublisher & {
+  setReady: (r: boolean) => void;
+  seqs: number[];
+  pushes: number;
+  log: string[];
+} {
   let ready = false;
   let seq = 0;
   const seqs: number[] = [];
-  return {
+  const log: string[] = [];
+  const self = {
     async publishFix(): Promise<number> {
       seq += 1;
       seqs.push(seq);
+      log.push(`publish:${seq}`);
       return seq;
+    },
+    async pushTrail(): Promise<void> {
+      self.pushes += 1;
+      log.push('push');
     },
     isReady(): boolean {
       return ready;
@@ -55,7 +66,10 @@ function fakePublisher(): FixPublisher & { setReady: (r: boolean) => void; seqs:
       ready = r;
     },
     seqs,
+    pushes: 0,
+    log,
   };
+  return self;
 }
 
 function fullBattery(): () => Promise<BatteryState> {
@@ -96,6 +110,54 @@ describe('location engine', () => {
     expect(points.map((p) => p.seq)).toEqual([1, 2]);
     expect(publisher.seqs).toEqual([1, 2]);
     expect(engine.getState().pending).toBe(0);
+  });
+
+  // publishFix writes the LOCAL docs replica; only pushTrail gets the batch to the stash, and
+  // without it an offline friend has nothing to reconcile from.
+  it('pushes the durable trail once per flush, after every fix in the batch is published', async () => {
+    const publisher = fakePublisher();
+    const outbox = fakeOutbox();
+    const trail = createTrailStore({ storage: new InMemoryTrailStorage() });
+    let t = 0;
+    const engine = createLocationEngine({
+      publisher,
+      outbox,
+      trail,
+      policy: createSamplingPolicy(),
+      battery: fullBattery(),
+      now: () => t,
+    });
+    await engine.start();
+
+    await engine.ingest(fix(0));
+    t = 20_000;
+    await engine.ingest(fix(20_000, { lat: 41 }));
+
+    publisher.setReady(true);
+    await engine.flush();
+
+    expect(publisher.log).toEqual(['publish:1', 'publish:2', 'push']);
+    expect(publisher.pushes).toBe(1);
+  });
+
+  it('does not push when the flush published nothing', async () => {
+    const publisher = fakePublisher();
+    publisher.setReady(true);
+    const outbox = fakeOutbox();
+    const trail = createTrailStore({ storage: new InMemoryTrailStorage() });
+    const engine = createLocationEngine({
+      publisher,
+      outbox,
+      trail,
+      policy: createSamplingPolicy(),
+      battery: fullBattery(),
+      now: () => 0,
+    });
+    await engine.start();
+
+    await engine.flush();
+
+    expect(publisher.pushes).toBe(0);
   });
 
   it('auto-flushes on ingest when publisher is ready', async () => {

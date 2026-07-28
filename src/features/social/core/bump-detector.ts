@@ -28,6 +28,32 @@ const DEFAULT_SETTLE_MS = 450;
 const DEFAULT_COOLDOWN_MS = 3000;
 const GRAVITY_SMOOTHING = 0.08;
 
+/**
+ * How much of the default threshold an Android phone has to clear. Android accelerometer delivery
+ * is coarser and less punctual than Core Motion's — the requested 50Hz is a hint the OS is free to
+ * miss — so the short peak of a genuine tap can land between samples and read weaker than it was.
+ * Same physical bump, smaller number.
+ *
+ * Trade-off: this necessarily also admits more near-misses (a firm set-down on a table). That is
+ * deliberately the cheap direction to be wrong in — a false detection only *resolves* a nearby
+ * peer, and pairing still requires the full authenticated handshake plus a human matching the SAS
+ * figure, so nothing is granted by a stray jolt. A missed bump, by contrast, is the user standing
+ * there tapping phones together wondering why nothing happens.
+ */
+export const ANDROID_BUMP_SENSITIVITY = 0.7;
+
+/**
+ * Detector tuning for `os` (pass `Platform.OS`). Pure and separate from the hook so the platform
+ * split is unit-testable without a running React Native.
+ */
+export function bumpOptionsForPlatform(os: string): BumpDetectorOptions {
+  if (os !== 'android') return {};
+  return {
+    impactThreshold: DEFAULT_IMPACT_THRESHOLD * ANDROID_BUMP_SENSITIVITY,
+    jerkThreshold: DEFAULT_JERK_THRESHOLD * ANDROID_BUMP_SENSITIVITY,
+  };
+}
+
 function magnitude(sample: Pick<MotionSample, 'x' | 'y' | 'z'>): number {
   return Math.sqrt(sample.x * sample.x + sample.y * sample.y + sample.z * sample.z);
 }

@@ -216,13 +216,25 @@ GPS (OS, fore+background) ─▶ LocationEngine ─▶ FixOutbox ─▶ Location
   (offline / process death). A mounted runtime publishes TaskManager batches immediately; a fresh
   headless context restores the persisted profile, keys, sharing pool, and minimal iroh publisher
   before draining the queue.
+- **Push-to-stash is explicit** (`pushTrail` → native `trail.push`): `docsWrite` writes only the
+  LOCAL replica. iroh-docs broadcasts a `LocalInsert` **only** for namespaces its live engine has
+  marked as syncing, which happens on `start_sync` and nowhere else — so a context that publishes
+  without calling `pushTrail`/`syncTrail` strands every envelope on the device. Publish paths must
+  therefore **drain, then push** (`LocationEngine.flush`, `flushBackgroundOutboxHeadless`). Ordering
+  is load-bearing: syncing _before_ the drain leaves that wake's fixes for the next OS wake, which
+  is what produced hour-long gaps in friends' trails while both phones looked healthy.
+- **Headless must re-open friend namespaces** (`restorePool` → `importFriendTrails`): native
+  `syncTrail` reconciles the namespaces in its handle cache, and a fresh node starts with only our
+  own in it. Without re-importing each friend's `docTicket`, a background backfill runs, reports
+  success, and recovers nothing.
 - **Reconnect-on-resume** (`lifecycle.ts`): on foreground → drain outbox + `syncTrail`;
   monotonic `seq` persisted (`state-store.ts`) so `author/seq` keys never collide across restarts.
 - **Periodic backfill** (`backfill-task.ts` + `headless-runtime.ts`): the SEND task only fires on
   movement and only publishes, so a backgrounded phone never pulls peers' fixes. An
   `expo-background-task` (iOS `BGTaskScheduler` / Android `WorkManager`, ~15 min, OS-scheduled)
-  periodically wakes a short-lived headless node to `syncTrail` from the stash + drain any queued
-  outbox. Scheduled while background sharing is on; there is deliberately NO server push-wake.
+  periodically wakes a short-lived headless node to drain any queued outbox and then `syncTrail`
+  (bidirectional: one call both pushes what we just published and pulls what friends left at the
+  stash). Scheduled while background sharing is on; there is deliberately NO server push-wake.
 - **Config**: iOS `UIBackgroundModes: [location, processing]` + `NSLocationAlwaysAndWhenInUse…`; Android
   `ACCESS_BACKGROUND_LOCATION` + `FOREGROUND_SERVICE_LOCATION` + `POST_NOTIFICATIONS`
   (`app.json` / expo-location config plugin).
