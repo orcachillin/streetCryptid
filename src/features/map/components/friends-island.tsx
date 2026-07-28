@@ -37,14 +37,16 @@ interface FriendsIslandProps {
 const MAX_LIST_HEIGHT = 268;
 
 /**
- * The friends roster island from the design archive (`renders/social-roster-*`):
- * the bottom island swapped from "where you are" to "who is out there", without
- * ever leaving the map.
+ * The island's FRIENDS body (`renders/social-roster-*`): the same island swapped
+ * from "where you are" to "who is out there", without ever leaving the map.
  *
  * Hairline dividers, not cards. One signal color per friend. Offline rows dim
  * instead of vanishing, so the roster's shape is stable. There is deliberately
  * no "shared ground" bar here — the mock showed one, but the app has no overlap
  * metric yet and a fabricated number would break the one-honest-signal rule.
+ *
+ * The card surface and the FRIENDS label both belong to `MapIsland`, so the
+ * header leads with the one fact the tab cannot carry: how many are live.
  */
 export function FriendsIsland({
   friends,
@@ -57,32 +59,26 @@ export function FriendsIsland({
   const nearby = friends.filter((friend) => friend.online).length;
 
   return (
-    <View
-      style={[styles.island, { backgroundColor: chrome.island, borderColor: chrome.islandBorder }]}
-    >
-      <View style={styles.header}>
-        <Text style={[styles.title, { color: chrome.ink }]}>FRIENDS</Text>
-        <View
-          accessible
-          accessibilityRole="summary"
-          accessibilityLabel={
-            friends.length === 0
-              ? 'No friends in your atlas yet.'
-              : `${friends.length} friend${friends.length === 1 ? '' : 's'}, ${nearby} sharing live.`
-          }
-          style={styles.count}
-        >
-          <View style={[styles.pip, { backgroundColor: nearby > 0 ? chrome.green : chrome.seg }]} />
-          <Text style={[styles.countText, { color: chrome.steel }]}>{nearby} NEARBY</Text>
-        </View>
+    <View style={styles.body}>
+      <View
+        accessible
+        accessibilityRole="summary"
+        accessibilityLabel={
+          friends.length === 0
+            ? 'No friends in your atlas yet.'
+            : `${friends.length} friend${friends.length === 1 ? '' : 's'}, ${nearby} sharing live.`
+        }
+        style={styles.header}
+      >
+        <View style={[styles.pip, { backgroundColor: nearby > 0 ? chrome.green : chrome.seg }]} />
+        <Text style={[styles.title, { color: chrome.ink }]}>{nearby} NEARBY</Text>
       </View>
 
       {pairing}
 
       {friends.length === 0 ? (
         <Text style={[styles.empty, { color: chrome.steel }]}>
-          No cryptids in your atlas yet. Touch two phones together while this island is open on
-          both.
+          No cryptids in your atlas yet. Touch two phones together while both are on this tab.
         </Text>
       ) : (
         <ScrollView
@@ -197,18 +193,15 @@ export function compactDistance(distanceM: number | null): string | null {
 }
 
 const styles = StyleSheet.create({
-  island: {
-    borderRadius: 26,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingBottom: Spacing.two,
+  body: {
+    paddingBottom: Spacing.one,
     paddingHorizontal: Spacing.four,
     paddingTop: Spacing.three,
   },
   header: {
     alignItems: 'center',
     flexDirection: 'row',
-    gap: Spacing.three,
-    justifyContent: 'space-between',
+    gap: Spacing.two,
     minHeight: 32,
   },
   title: {
@@ -217,20 +210,10 @@ const styles = StyleSheet.create({
     letterSpacing: 3,
     lineHeight: 28,
   },
-  count: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: Spacing.one,
-  },
   pip: {
-    borderRadius: 4,
-    height: 8,
-    width: 8,
-  },
-  countText: {
-    fontFamily: 'IBMPlexMono_500Medium',
-    fontSize: 10,
-    letterSpacing: 1.2,
+    borderRadius: 5,
+    height: 10,
+    width: 10,
   },
   empty: {
     fontFamily: 'IBMPlexMono_400Regular',

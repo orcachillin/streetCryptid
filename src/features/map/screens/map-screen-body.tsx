@@ -9,13 +9,14 @@ import { useCryptidProfile } from '@/features/account/hooks/use-cryptid-profile'
 import {
   CoverageIsland,
   FriendHistoryIsland,
-  FriendsControl,
   FriendsIsland,
   LocateMeControl,
+  MapIsland,
   MapLayersControl,
   MapView,
   SettingsControl,
   useMapTheme,
+  type IslandTab,
   type MapFriendLocation,
   type MapReadout,
   type MapRosterFriend,
@@ -78,9 +79,8 @@ export default function MapScreenBody() {
   }
   const selectedEndpoint = selection.selectedId;
   const [explorationEnabled, setExplorationEnabled] = useState(true);
-  const [rosterOpen, setRosterOpen] = useState(false);
+  const [islandTab, setIslandTab] = useState<IslandTab>('here');
   const [profileEndpoint, setProfileEndpoint] = useState<string | null>(null);
-  const bump = useArmedBump(rosterOpen);
   const [locateTarget, setLocateTarget] = useState<{
     requestId: number;
     location: MapFriendLocation['location'];
@@ -177,6 +177,11 @@ export default function MapScreenBody() {
     };
   }, [profile, selfFix, selfHistory, theme.canvas.accent]);
   const selectedHistory = selectedEndpoint === SELF_AUTHOR ? selfMapLocation : selectedFriend;
+  // A selected trace is a drill-down *inside* the FRIENDS tab, not a third tab:
+  // the roster is only actually on screen when nothing is drilled into. This is
+  // also what arms bump pairing, so the radio never runs behind a trace island.
+  const rosterOpen = islandTab === 'friends' && !selectedHistory;
+  const bump = useArmedBump(rosterOpen);
 
   const closeHistory = useCallback(() => {
     setSelection((current) => ({ ...current, selectedId: null }));
@@ -191,7 +196,7 @@ export default function MapScreenBody() {
   const toggleSelection = useCallback(
     (id: string) => {
       if (selectedEndpoint !== id) {
-        setRosterOpen(false);
+        setIslandTab('here');
         setSelection((current) => ({ ...current, selectedId: id }));
         return;
       }
@@ -212,24 +217,25 @@ export default function MapScreenBody() {
       location: { lat: selfFix.lat, lon: selfFix.lon },
     }));
   }, [selfFix]);
-  // The roster and a friend's trace both want the one island slot, so opening the
-  // roster closes whatever trace was showing. Otherwise the toggle would look
-  // dead whenever a locator happened to be selected.
-  const toggleRoster = useCallback(() => {
-    if (rosterOpen) {
-      setRosterOpen(false);
-      return;
-    }
-    closeHistory();
-    setRosterOpen(true);
-  }, [closeHistory, rosterOpen]);
+  // The island's segmented bar is the app's only navigation. Either tab also
+  // dismisses whatever trace was drilled into, so the bar can never look dead —
+  // and so tapping the tab you are already "on" is a way back out of a trace.
+  const selectIslandTab = useCallback(
+    (tab: IslandTab) => {
+      closeHistory();
+      setIslandTab(tab);
+    },
+    [closeHistory]
+  );
   // Tapping a roster row is the same gesture as tapping the locator: fly there
-  // and open the trace. The roster steps aside so the map it just moved is visible.
+  // and open the trace. The roster steps aside so the map it just moved is
+  // visible, but the FRIENDS tab stays lit — you drilled in from there, and
+  // closing the trace should put you back on the roster, not on HERE.
   const focusRosterFriend = useCallback(
     (friendId: string) => {
       const target = mapFriends.find((friend) => friend.id === friendId);
       if (!target) return;
-      setRosterOpen(false);
+      setIslandTab('friends');
       setSelection((current) => ({ ...current, selectedId: friendId }));
       setLocateTarget((current) => ({
         requestId: (current?.requestId ?? 0) + 1,
@@ -255,7 +261,7 @@ export default function MapScreenBody() {
   useEffect(() => {
     if (!snapshot?.ready || !pairToken || redeemedPairToken.current === pairToken) return;
     redeemedPairToken.current = pairToken;
-    setRosterOpen(true);
+    selectIslandTab('friends');
     void pairFromInput(pairToken)
       .catch(() => {
         // The provider surfaces the actionable error; consume the rejection here.
@@ -263,7 +269,7 @@ export default function MapScreenBody() {
       .finally(() => {
         router.setParams({ pair: undefined });
       });
-  }, [pairFromInput, pairToken, router, snapshot?.ready]);
+  }, [pairFromInput, pairToken, router, selectIslandTab, snapshot?.ready]);
 
   const pct = Math.round(readout.coverage * 100);
   const friendNames = mapFriends.map((friend) => friend.handle).join(', ');
@@ -337,10 +343,9 @@ export default function MapScreenBody() {
         </Text>
         <SettingsControl onPress={() => router.push('/settings')} theme={theme} />
       </View>
-      {/* Controls ride directly above the island so both stay in thumb reach.
-          Living inside the bottom-anchored stack (rather than at a fixed offset)
-          keeps them pinned to the island's top edge no matter which island is
-          showing, and lets the layers panel grow upward into free space. */}
+      {/* Only map affordances float now: layers and locate. Switching what the
+          island is about belongs to the island's own segmented bar, so the map's
+          corners stay about the map. */}
       <View
         pointerEvents="box-none"
         style={[styles.islandLayer, { paddingBottom: islandBottomPadding }]}
@@ -351,49 +356,45 @@ export default function MapScreenBody() {
             onChange={setExplorationEnabled}
             theme={theme}
           />
-          <FriendsControl
-            nearby={nearbyCount}
-            onPress={toggleRoster}
-            open={rosterOpen}
-            theme={theme}
-          />
           <LocateMeControl
             disabled={!hasLiveSelfFix || !selfFix}
             onPress={locateSelf}
             theme={theme}
           />
         </View>
-        {selectedHistory ? (
-          <FriendHistoryIsland
-            friend={selectedHistory}
-            onClose={closeHistory}
-            self={selectedEndpoint === SELF_AUTHOR}
-            theme={theme}
-          />
-        ) : rosterOpen ? (
-          <FriendsIsland
-            friends={rosterFriends}
-            onOpenProfile={setProfileEndpoint}
-            onSelect={focusRosterFriend}
-            pairing={
-              <BumpPairingStrip
-                onCommit={bump.commit}
-                onRetry={bump.retry}
-                pairing={bump.pairing}
-                sensor={bump.sensor}
-                theme={theme}
-              />
-            }
-            theme={theme}
-          />
-        ) : (
-          <CoverageIsland
-            coverage={readout.coverage}
-            placeName={readout.placeName}
-            sectorsVisible={readout.sectorsVisible}
-            theme={theme}
-          />
-        )}
+        <MapIsland active={islandTab} nearby={nearbyCount} onSelect={selectIslandTab} theme={theme}>
+          {selectedHistory ? (
+            <FriendHistoryIsland
+              friend={selectedHistory}
+              onClose={closeHistory}
+              self={selectedEndpoint === SELF_AUTHOR}
+              theme={theme}
+            />
+          ) : rosterOpen ? (
+            <FriendsIsland
+              friends={rosterFriends}
+              onOpenProfile={setProfileEndpoint}
+              onSelect={focusRosterFriend}
+              pairing={
+                <BumpPairingStrip
+                  onCommit={bump.commit}
+                  onRetry={bump.retry}
+                  pairing={bump.pairing}
+                  sensor={bump.sensor}
+                  theme={theme}
+                />
+              }
+              theme={theme}
+            />
+          ) : (
+            <CoverageIsland
+              coverage={readout.coverage}
+              placeName={readout.placeName}
+              sectorsVisible={readout.sectorsVisible}
+              theme={theme}
+            />
+          )}
+        </MapIsland>
       </View>
 
       <FriendProfileSheet

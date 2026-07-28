@@ -96,15 +96,24 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
 
 - **Full-bleed map. There is no tab bar and no header.** The map is the whole app. The
   only chrome is floating: attribution and a Settings gear across the top, a right-side
-  control stack (layers · friends toggle [green] · locate [amber]), and one bottom island.
-  Everything else is either an island over the map or a sheet pulled over it.
+  control stack of **map affordances only** (layers · locate [amber]), and one bottom
+  island. Everything else is either that island or a sheet pulled over it.
 - **Settings is one gear, top-right,** in neutral steel — never an accent, because it is
   not a signal. It opens as a modal over the map with its own close affordance, so leaving
   it always returns you to exactly the view you left.
-- **Bottom island is zoom-aware "where you are":** hero place name (Rajdhani) + one mono
+- **One island, with its own segmented bar** (HERE · FRIENDS) along its bottom edge — the
+  app's only navigation. Find My's model: the sheet owns the switch, so the map's corners
+  stay about the map and nothing floats that isn't a map affordance. Selection is carried
+  by **contrast, not colour** (ink on a `seg` pill vs steel), because amber belongs to YOU
+  and green to real presence. The FRIENDS tab carries the live green pip _only_ while the
+  roster is not itself saying "N NEARBY".
+- **HERE is zoom-aware "where you are":** hero place name (Rajdhani) + one mono
   uppercase sub + **one** flip-dot coverage bar + **one** % — retitled per tier
   (BLOCKS / SECTORS / HOODS / CITIES). **No legend** (removed). Declutter law: one live
   dot, one coverage number, one accent — never duplicate badges or status text.
+- **A selected trace is a drill-down, not a third tab.** It replaces the island's body while
+  the bar stays lit on the tab you came from, so closing it returns you where you were and
+  either tab is always a way out.
 - **Surfaces:** flat translucent panel + 1px hairline border, generous radius (island
   ≈ 26px). No gradients, no glow, no glass-as-default, no vignette.
 
@@ -117,17 +126,20 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
   mono and rendered in their chosen signal — terminal-native, not a mascot.
 - **Roster sheet:** cryptid avatar + `@handle` + location + a **"shared ground"** bar
   (% of streets you've _both_ walked). Hairline dividers, **not** cards; offline rows
-  dimmed. The roster is also the map's second island — the friends toggle swaps the bottom
-  island from "where you are" to "who is out there" without leaving the map, and tapping a
-  row flies there and opens that friend's trace. _Shipped without the shared-ground bar:_
+  dimmed. The roster is the island's FRIENDS tab — it swaps the bottom island from "where
+  you are" to "who is out there" without leaving the map, and tapping a row flies there and
+  opens that friend's trace. It leads with `N NEARBY` rather than a "FRIENDS" title,
+  because the lit tab below already names the view. _Shipped without the shared-ground bar:_
   the app has no overlap metric yet, and the declutter law says a fabricated number is worse
   than no number.
 - **Friend profile:** big cryptid hero, sharing state, retained 48-hour location timeline,
   and a **"View trail on map"** CTA. It is reached from the chevron on a roster row — the
   row itself asks "where are they", the chevron asks "who are they".
-- **Pairing lives in the roster island, not on a screen.** Opening the island IS arming
+- **Pairing lives in the FRIENDS tab, not on a screen.** Selecting that tab IS arming
   bump: two phones showing their rosters and touching is the whole gesture. There is no
-  ARM button and no pairing mode. The island shows a single honest status line, and only
+  ARM button and no pairing mode. Drilling into a friend's trace disarms it, so the radio
+  never runs behind an island that isn't the roster. The island shows a single honest
+  status line, and only
   offers a tap-to-pair button when motion detection cannot close the deal. The blocking
   ASCII verification and the discovery celebration are full overlays — that is the one
   moment a mistake hands a stranger your location, so it earns the whole screen.

@@ -316,8 +316,9 @@ period.
 
 ## 9b. Nearby and remote exchange
 
-The friends island on the map is the pairing surface; there is no separate pairing mode
-and no Friends route. Opening the island arms bump.
+The island's **FRIENDS tab** is the pairing surface; there is no separate pairing mode
+and no Friends route. Selecting that tab arms bump, and drilling into a friend's trace
+disarms it again.
 
 ### Nearby: Bump over iroh BLE
 

@@ -16,11 +16,13 @@ export interface ArmedBump {
 }
 
 /**
- * Bump is armed for as long as the friends island is open and the app is in front.
+ * Bump is armed for as long as the roster is actually on screen and the app is
+ * in front — that is, the island's FRIENDS tab is selected and nothing is
+ * drilled into.
  *
  * There is no ARM button and no pairing screen: showing the roster IS declaring
- * "I am trying to meet someone". Closing it — or backgrounding the app — disarms,
- * so the radio is never quietly left listening.
+ * "I am trying to meet someone". Leaving the tab, drilling into a friend's trace,
+ * or backgrounding the app disarms, so the radio is never quietly left listening.
  *
  * Arming only ever fires from `idle`, so a failure parks the strip on TRY AGAIN
  * instead of spinning the radio in a retry loop.

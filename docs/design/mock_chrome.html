@@ -56,13 +56,29 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
   box-shadow:0 10px 24px -14px var(--shadow);}
 .cbtn.on{color:var(--amber);border-color:var(--amberd);}
 
-/* bottom island — floating "where you are" */
+/* bottom island — one card: a body, then its own segmented bar */
 .island{position:absolute;left:14px;right:14px;bottom:16px;z-index:8;
   background:var(--island);
   backdrop-filter:blur(20px) saturate(1.1);
   border:1px solid var(--islandbd);border-radius:26px;
   box-shadow:0 18px 44px -22px var(--shadow);
-  padding:16px 22px 18px;}
+  overflow:hidden;}
+.ibody{padding:16px 22px 6px;}
+
+/* ===== the island's segmented bar: the app's ONLY navigation =====
+   Modelled on Find My — the sheet owns the switch, so the map's corners stay
+   free for map affordances. Contrast, not colour, carries selection: amber is
+   reserved for YOU, contact-green for real friend presence. */
+.itabs{display:flex;gap:4px;padding:8px;border-top:1px solid var(--line);}
+.itab{flex:1;min-height:44px;border-radius:18px;display:flex;align-items:center;
+  justify-content:center;gap:8px;color:var(--steel);}
+.itab.on{background:var(--seg);color:var(--ink);}
+.itab .tl{font-family:'Rajdhani';font-weight:600;font-size:13px;letter-spacing:2px;
+  text-transform:uppercase;line-height:16px;}
+.itab.on .tl{font-weight:700;}
+.itab .ti{position:relative;display:flex;align-items:center;justify-content:center;}
+.itab .tp{position:absolute;right:-5px;top:-3px;width:8px;height:8px;border-radius:4px;
+  background:var(--ok);border:1.5px solid var(--island);}
 .grab{width:38px;height:5px;border-radius:3px;background:rgba(138,166,178,.28);margin:2px auto 16px;}
 .st{font-family:'Rajdhani';font-weight:700;font-size:30px;color:var(--ink);letter-spacing:.2px;line-height:1;}
 .nb{font-family:'IBM Plex Mono';font-size:10.5px;letter-spacing:1.7px;color:var(--steel);margin-top:9px;text-transform:uppercase;}
@@ -78,12 +94,13 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
 .stat{font-family:'IBM Plex Mono';font-size:9.5px;letter-spacing:1.4px;color:var(--steeld);text-transform:uppercase;display:flex;align-items:baseline;gap:6px;}
 .stat b{font-family:'Rajdhani';font-weight:700;font-size:18px;color:var(--ink);letter-spacing:0;}
 
-/* ===== SOCIAL: friends roster island (bump pairing lives here) ===== */
-.shd{display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;min-height:32px;}
+/* ===== SOCIAL: friends roster body (bump pairing lives here) =====
+   No "FRIENDS" title: the lit tab below already names the view, so the header
+   leads with the one fact the tab cannot carry — how many are live. */
+.shd{display:flex;align-items:center;gap:8px;margin-bottom:2px;min-height:32px;}
 .shd h2{font-family:'Rajdhani';font-weight:700;font-size:24px;color:var(--ink);letter-spacing:3px;text-transform:uppercase;}
-.shd .onl{font-family:'IBM Plex Mono';font-size:10px;letter-spacing:1.2px;color:var(--steel);display:flex;align-items:center;gap:7px;text-transform:uppercase;}
-.shd .onl i{width:8px;height:8px;border-radius:50%;background:var(--ok);}
-.shd .onl i.dim{background:var(--seg);}
+.shd i{width:10px;height:10px;border-radius:50%;background:var(--ok);}
+.shd i.dim{background:var(--seg);}
 
 /* bump strip: opening the island IS arming. No ARM button, and deliberately
    NO second pip - the header above already owns the one live dot. */
@@ -164,13 +181,15 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
     <span class="attrib">© OpenStreetMap</span>
     <div class="sfab"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 14.6a1.6 1.6 0 0 0 .32 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-.97 1.47V21a2 2 0 1 1-4 0v-.11a1.6 1.6 0 0 0-1.05-1.47 1.6 1.6 0 0 0-1.77.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.47-.97H3a2 2 0 1 1 0-4h.11a1.6 1.6 0 0 0 1.47-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.32H9a1.6 1.6 0 0 0 .97-1.47V3a2 2 0 1 1 4 0v.11a1.6 1.6 0 0 0 .97 1.47 1.6 1.6 0 0 0 1.77-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.32 1.77V9a1.6 1.6 0 0 0 1.47.97H21a2 2 0 1 1 0 4h-.11a1.6 1.6 0 0 0-1.47.97Z"/></svg></div>
   </div>
+  <!-- Only map affordances float: layers and locate. Switching what the island
+       is about belongs to the island's own segmented bar. -->
   <div class="controls">
     <div class="cbtn"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="M3 13l9 5 9-5"/><path d="M3 17.6l9 5 9-5"/></svg></div>
-    <div class="cbtn" id="fbtn" style="color:var(--ok);border-color:var(--ok)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.1"/><path d="M3.6 19.6a5.4 5.4 0 0 1 10.8 0"/><path d="M16.2 5.3a3.1 3.1 0 0 1 0 5.4"/><path d="M17.6 14.3a5.4 5.4 0 0 1 3.4 5.3"/></svg></div>
     <div class="cbtn on"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3.6"/><path d="M12 2v3.4M12 18.6V22M2 12h3.4M18.6 12H22"/></svg></div>
   </div>
   <div class="island" id="sheet">
-    <div id="sheetbody"></div>
+    <div class="ibody" id="sheetbody"></div>
+    <div class="itabs" id="itabs"></div>
   </div>
   <div class="sheetmodal" id="settings">
     <div class="sm-scrim"></div>
@@ -376,7 +395,7 @@ function build(){
   // Labels never spill off the canvas or hide under the island; the budget goes
   // to the part of the map you can actually see.
   const TOP_LIMIT = 104;
-  const BOTTOM_LIMIT = H - (socialView === 'coverage' ? 190 : 350);
+  const BOTTOM_LIMIT = H - (socialView === 'coverage' ? 252 : 412);
   const inBox = (p) => p[0] > 8 && p[0] < W - 8 && p[1] > TOP_LIMIT && p[1] < BOTTOM_LIMIT;
   const placed = [];
   streetLabels = [];
@@ -496,7 +515,7 @@ function draw(){
     ctx.fillStyle=rgba(T.streetLabel,.92);ctx.fillText(L.nm,0,0);ctx.restore();}
   // park labels
   ctx.font="600 9px 'IBM Plex Mono',monospace";ctx.textAlign='center';
-  const PBOT=H-(socialView==='coverage'?190:350);
+  const PBOT=H-(socialView==='coverage'?252:412);
   for(const p of (window.__parkLabels||[])){
     const pw=p.nm.length*5.4;
     if(p.x-pw/2<10||p.x+pw/2>W-10||p.y<110||p.y>PBOT)continue;
@@ -652,14 +671,13 @@ const BUMP = {
     live: true,
   },
   searching: { s: 'Reading 2 signals', d: 'Ranking the nearest phone and verifying it.', live: true },
-  failed: { s: 'Bump missed', d: 'Keep both islands open and try once more.', b: 'Try again' },
+  failed: { s: 'Bump missed', d: 'Keep both phones on the FRIENDS tab and try once more.', b: 'Try again' },
   off: { s: 'Bluetooth offline', d: 'Turn Bluetooth on to meet someone in person.' },
 };
 function renderRoster(host) {
   const online = FRIENDS.filter((f) => f.online).length;
   const bp = BUMP[bumpStage] || BUMP.armed;
-  let h = `<div class="shd"><h2>Friends</h2>
-    <span class="onl"><i class="${online ? '' : 'dim'}"></i>${online} nearby</span></div>
+  let h = `<div class="shd"><i class="${online ? '' : 'dim'}"></i><h2>${online} nearby</h2></div>
     <div class="pair">
       <div class="pc">
         <div class="ps ${bp.live ? '' : 'idle'}">${esc(bp.s)}</div>
@@ -710,23 +728,37 @@ function renderSettings(host) {
     <div class="sm-row"><div class="rc"><div class="rt">Transports</div>
       <div class="rs">Relay · direct · BLE</div></div><div class="go">›</div></div>`;
 }
+const TAB_ICON = {
+  here: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.6 20.1 7v10L12 21.4 3.9 17V7L12 2.6Z"/></svg>',
+  friends:
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="8" r="3.2"/><path d="M3.4 19.8a5.6 5.6 0 0 1 11.2 0Z"/><circle cx="17" cy="9.4" r="2.6"/><path d="M14.9 19.8a6.9 6.9 0 0 0-1.6-4.3 4.5 4.5 0 0 1 7.3 4.3Z"/></svg>',
+};
+// One live dot, and only while the roster is not already saying "N NEARBY" —
+// the declutter law forbids stating presence twice.
+function renderTabs(host) {
+  const online = FRIENDS.filter((f) => f.online).length;
+  const pip = socialView !== 'friends' && online > 0;
+  host.innerHTML = `
+    <div class="itab ${socialView === 'coverage' ? 'on' : ''}">
+      <span class="ti">${TAB_ICON.here}</span><span class="tl">Here</span></div>
+    <div class="itab ${socialView === 'friends' ? 'on' : ''}">
+      <span class="ti">${TAB_ICON.friends}${pip ? '<i class="tp"></i>' : ''}</span>
+      <span class="tl">Friends</span></div>`;
+}
 function populateSheet() {
   const host = document.getElementById('sheetbody');
   if (host) {
     if (socialView === 'coverage') renderCoverage(host);
     else renderRoster(host);
   }
-  const fbtn = document.getElementById('fbtn');
-  if (fbtn && socialView === 'coverage') {
-    fbtn.style.color = 'var(--steel)';
-    fbtn.style.borderColor = 'var(--glassbd)';
-  }
+  const tabs = document.getElementById('itabs');
+  if (tabs) renderTabs(tabs);
   const modal = document.getElementById('settings');
   if (modal && showSettings) {
     renderSettings(document.getElementById('settingsbody'));
     modal.classList.add('show');
   }
-  // Controls ride on the island's top edge, whichever island is showing.
+  // Controls ride on the island's top edge, whichever body is showing.
   const island = document.getElementById('sheet'),
     controls = document.querySelector('.controls');
   if (island && controls) controls.style.bottom = island.offsetHeight + 16 + 14 + 'px';

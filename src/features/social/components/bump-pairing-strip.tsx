@@ -27,9 +27,9 @@ function secondsRemaining(expiresAt: number | null): number {
 }
 
 /**
- * Reads out the pairing radio inside the friends island.
+ * Reads out the pairing radio inside the island's FRIENDS tab.
  *
- * There is no ARM button: the island being open is the arming gesture (see
+ * There is no ARM button: the tab being selected is the arming gesture (see
  * `useArmedBump`). What is left is a single honest status line, so the strip is a
  * readout first and a control only when motion detection cannot close the deal.
  */
@@ -73,7 +73,7 @@ export function BumpPairingStrip({
     >
       <View style={styles.copy}>
         <View style={styles.statusRow}>
-          {/* No second pip: the island header already owns the one live dot.
+          {/* No second pip: the roster header already owns the one live dot.
               The status ink carries "listening" instead. */}
           <Text
             numberOfLines={1}
@@ -167,14 +167,14 @@ function stripCopy(
     case 'failed':
       return {
         status: 'BUMP MISSED',
-        detail: pairing.bump.error ?? 'Keep both islands open and try once more.',
+        detail: pairing.bump.error ?? 'Keep both phones on the FRIENDS tab and try once more.',
         action: 'retry',
         listening: false,
       };
     default:
       return {
         status: 'ARMING BUMP',
-        detail: 'Open the friends island on both phones.',
+        detail: 'Open the FRIENDS tab on both phones.',
         action: null,
         listening: false,
       };

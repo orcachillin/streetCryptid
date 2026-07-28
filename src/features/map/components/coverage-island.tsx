@@ -32,9 +32,11 @@ interface CoverageIslandProps {
 }
 
 /**
- * The bottom "where you are" island: hero place name, one mono sub line, one
- * flip-dot coverage bar, one percentage — and nothing else (declutter law).
- * Doubles as the screen-reader text model for the canvas (PRODUCT.md P0).
+ * The island's HERE body: hero place name, one mono sub line, one flip-dot
+ * coverage bar, one percentage — and nothing else (declutter law). Doubles as
+ * the screen-reader text model for the canvas (PRODUCT.md P0).
+ *
+ * The card surface belongs to `MapIsland`; this only supplies its own padding.
  */
 export function CoverageIsland({
   theme,
@@ -56,13 +58,7 @@ export function CoverageIsland({
     : `${hero}. Sector coverage is hidden at this zoom.`;
 
   return (
-    <View
-      style={[
-        styles.island,
-        showSectors ? styles.islandExpanded : styles.islandMinimized,
-        { backgroundColor: chrome.island, borderColor: chrome.islandBorder },
-      ]}
-    >
+    <View style={showSectors ? styles.bodyExpanded : styles.bodyMinimized}>
       <View style={styles.header}>
         <View
           accessible
@@ -130,17 +126,13 @@ export function CoverageIsland({
 }
 
 const styles = StyleSheet.create({
-  island: {
-    borderRadius: 26,
-    borderWidth: StyleSheet.hairlineWidth,
+  bodyExpanded: {
     paddingHorizontal: Spacing.four,
-  },
-  islandExpanded: {
     paddingVertical: Spacing.two,
   },
-  islandMinimized: {
-    paddingLeft: Spacing.three,
-    paddingRight: Spacing.two,
+  bodyMinimized: {
+    paddingLeft: Spacing.four,
+    paddingRight: Spacing.three,
     paddingVertical: Spacing.one,
   },
   header: {

@@ -18,8 +18,9 @@ file:///Z:/CopilotApp/streetCryptid/docs/design/mock_chrome.html?theme=daybreak&
 ```
 
 `mock_chrome.html` is **canonical**: it mirrors the shipped app chrome — no tab bar, a
-settings FAB top-right, street/park name labels gated by zoom, and the friends roster
-as an island over the map with bump pairing folded in.
+settings FAB top-right, street/park name labels gated by zoom, and one island over the map
+carrying its own HERE / FRIENDS segmented bar (the app's only navigation). Only map
+affordances float: layers and locate.
 
 `mock_social.html` is the earlier tab-era study (kept for the shared-ground bar and the
 full-screen profile view). `mock_real.html` is the same base map **without** friends.
@@ -32,8 +33,8 @@ full-screen profile view). `mock_real.html` is the same base map **without** fri
 | `zoom`     | `street` · `hood` · `city` · `region`         | `hood`     | Scope + island retitle; coverage drops outward. Also gates which **street names** are drawn. |
 | `fog`      | `hex` · `soft` · `grid`                       | `hex`      | Reveal model. `hex` = sector chunks (canonical). |
 | `data`     | `caphill` · `greenlk` · `union` · `core`      | per-zoom   | Which OSM geography to render.               |
-| `island`   | `friends` · `coverage`                        | `friends`  | `mock_chrome.html` only. Which island is docked. |
-| `bump`     | `armed` · `searching` · `failed` · `off`      | `armed`    | `mock_chrome.html` only. Pairing strip state inside the friends island. |
+| `island`   | `friends` · `coverage`                        | `friends`  | `mock_chrome.html` only. Which tab of the island's segmented bar is lit. |
+| `bump`     | `armed` · `searching` · `failed` · `off`      | `armed`    | `mock_chrome.html` only. Pairing strip state inside the FRIENDS tab. |
 | `settings` | `open`                                        | closed     | `mock_chrome.html` only. Pulls the settings sheet over the map. |
 | `social`   | `roster` · `profile`                          | `roster`   | `mock_social.html` only.                     |
 | `who`      | `wanderer` · `nightowl` · `fog_dog`           | first      | `mock_social.html` only — which friend `profile` shows. |
@@ -53,7 +54,7 @@ The **`-light` (daybreak) set is primary**; `-dark` is the deep-sea alternate.
 **App chrome (current) — light:**
 
 ![map](renders/chrome-1-map-light.png)
-![friends island](renders/chrome-2-friends-light.png)
+![friends tab](renders/chrome-2-friends-light.png)
 ![settings sheet](renders/chrome-3-settings-light.png)
 ![street labels](renders/chrome-4-labels-street-light.png)
 
@@ -75,7 +76,7 @@ Dark equivalents: `chrome-{1,2}-*-dark.png`, `zoom-*-dark.png`, `social-*-dark.p
 
 | File                       | What it is                                                        |
 | -------------------------- | ----------------------------------------------------------------- |
-| `mock_chrome.html`         | **Canonical**: the shipped chrome — no tab bar, settings FAB, zoom-gated street labels, friends island with bump pairing. |
+| `mock_chrome.html`         | **Canonical**: the shipped chrome — no tab bar, settings FAB, zoom-gated street labels, one island with a HERE / FRIENDS segmented bar and bump pairing. |
 | `mock_social.html`         | Tab-era study: map engine, 4 zoom tiers, 3 themes, social layer, shared-ground bar. |
 | `mock_real.html`           | Base map + zoom, no friends.                                       |
 | `mapdata.js`               | `window.OSMSETS` — baked multi-geography OSM (caphill/greenlk/union/core). |
