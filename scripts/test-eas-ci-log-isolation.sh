@@ -24,6 +24,22 @@ if ! jq -e '
   exit 1
 fi
 
+# The release workflow ships whatever the `production` profile produces, so it must stay a store
+# build: EAS-managed credentials, remotely auto-incremented build versions, and an .aab on Android
+# because Google Play rejects .apk uploads.
+if ! jq -e '
+  .cli.appVersionSource == "remote" and
+  (.build.production | (.autoIncrement == true) and
+    (.credentialsSource == "remote") and
+    (.distribution == null) and
+    (.android.buildType == null)) and
+  (.submit.production | (.ios.ascAppId | strings | length > 0) and
+    (.android.track | strings | length > 0))
+' "$repo_root/eas.json" >/dev/null; then
+  echo "The production build and submit profiles must be store-ready." >&2
+  exit 1
+fi
+
 cleanup() {
   if [[ -d "$test_root" ]]; then
     find "$test_root" -depth -delete
@@ -89,6 +105,20 @@ if [[ "$command" == "upload" ]]; then
     printf 'credential on upload stdout: %s\n' "$FAKE_SIGNING_CREDENTIAL"
   fi
   printf '{"url":"https://expo.dev/accounts/streetcryptid/projects/streetCryptid/builds/12345678-1234-1234-1234-123456789abc"}\n'
+  exit 0
+fi
+
+if [[ "$command" == "submit" ]]; then
+  printf 'credential on submit stdout: %s\n' "$FAKE_SIGNING_CREDENTIAL"
+  printf 'credential on submit stderr: %s\n' "$FAKE_SIGNING_CREDENTIAL" >&2
+  if [[ "${FAKE_EAS_FAIL_SUBMIT:-0}" == "1" ]]; then
+    exit 27
+  fi
+  if [[ "${FAKE_EAS_BAD_SUBMIT_URL:-0}" == "1" ]]; then
+    printf 'Submission details: https://evil.example.com/accounts/x/projects/y/submissions/12345678-1234-1234-1234-123456789abc\n'
+    exit 0
+  fi
+  printf 'Submission details: https://expo.dev/accounts/streetcryptid/projects/streetCryptid/submissions/abcdef01-2345-6789-abcd-ef0123456789\n'
   exit 0
 fi
 
@@ -235,4 +265,80 @@ if [[ "$bad_upload_transcript" != *"Expo output was withheld"* ]]; then
   exit 1
 fi
 
-echo "EAS CI log isolation withheld simulated signing credentials on build and upload paths."
+release_output="$test_root/release-output"
+release_transcript="$(
+  PATH="$test_root/bin:$PATH" \
+    DEBUG=1 \
+    EAS_DEBUG=1 \
+    EXPO_DEBUG=1 \
+    EXPO_TOKEN=fake-token \
+    FAKE_SIGNING_CREDENTIAL="$sentinel" \
+    SC_WHAT_TO_TEST="release notes" \
+    GITHUB_OUTPUT="$release_output" \
+    RUNNER_TEMP="$test_root" \
+    bash "$repo_root/scripts/eas-local-release-ci.sh" \
+    ios production production "$test_root/release.ipa" \
+    2>&1
+)"
+
+if [[ "$release_transcript" == *"$sentinel"* ]]; then
+  echo "The signing credential sentinel escaped from the release submission." >&2
+  exit 1
+fi
+grep -Fxq \
+  'submission_url=https://expo.dev/accounts/streetcryptid/projects/streetCryptid/submissions/abcdef01-2345-6789-abcd-ef0123456789' \
+  "$release_output"
+
+submit_failure_output="$test_root/submit-failure-output"
+set +e
+submit_failure_transcript="$(
+  PATH="$test_root/bin:$PATH" \
+    EXPO_TOKEN=fake-token \
+    FAKE_SIGNING_CREDENTIAL="$sentinel" \
+    FAKE_EAS_FAIL_SUBMIT=1 \
+    GITHUB_OUTPUT="$submit_failure_output" \
+    RUNNER_TEMP="$test_root" \
+    bash "$repo_root/scripts/eas-local-release-ci.sh" \
+    android production production "$test_root/submit-failure.aab" \
+    2>&1
+)"
+submit_failure_status=$?
+set -e
+
+if [[ "$submit_failure_status" -eq 0 ]]; then
+  echo "The simulated failed EAS submission unexpectedly succeeded." >&2
+  exit 1
+fi
+if [[ "$submit_failure_transcript" == *"$sentinel"* ]]; then
+  echo "The signing credential sentinel escaped from failed submission output." >&2
+  exit 1
+fi
+if [[ "$submit_failure_transcript" != *"Expo output was withheld"* ]]; then
+  echo "The failed submission did not explain that private output was withheld." >&2
+  exit 1
+fi
+
+bad_submit_output="$test_root/bad-submit-output"
+: > "$bad_submit_output"
+bad_submit_transcript="$(
+  PATH="$test_root/bin:$PATH" \
+    EXPO_TOKEN=fake-token \
+    FAKE_SIGNING_CREDENTIAL="$sentinel" \
+    FAKE_EAS_BAD_SUBMIT_URL=1 \
+    GITHUB_OUTPUT="$bad_submit_output" \
+    RUNNER_TEMP="$test_root" \
+    bash "$repo_root/scripts/eas-local-release-ci.sh" \
+    android production production "$test_root/bad-submit.aab" \
+    2>&1
+)"
+
+if [[ "$bad_submit_transcript" == *"$sentinel"* ]]; then
+  echo "The signing credential sentinel escaped from an off-host submission URL." >&2
+  exit 1
+fi
+if grep -q 'submission_url=' "$bad_submit_output"; then
+  echo "A submission URL outside expo.dev reached the job output." >&2
+  exit 1
+fi
+
+echo "EAS CI log isolation withheld simulated signing credentials on build, upload, and submit paths."
