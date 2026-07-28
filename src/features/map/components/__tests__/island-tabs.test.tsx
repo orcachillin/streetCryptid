@@ -11,18 +11,20 @@ jest.mock('@/global.css', () => ({}));
 
 describe('IslandTabs', () => {
   let renderer: ReactTestRenderer;
+  const SIGNAL = '#B06CE0';
 
   afterEach(() => {
     act(() => renderer?.unmount());
   });
 
-  function render(active: 'here' | 'friends', nearby: number, onSelect = jest.fn()) {
+  function render(active: 'me' | 'friends', nearby: number, onSelect = jest.fn(), signal = SIGNAL) {
     act(() => {
       renderer = create(
         <IslandTabs
           active={active}
           nearby={nearby}
           onSelect={onSelect}
+          signal={signal}
           theme={CryptidThemes.daybreak}
         />
       );
@@ -31,10 +33,10 @@ describe('IslandTabs', () => {
   }
 
   it('marks only the active tab as selected', () => {
-    render('here', 0);
+    render('me', 0);
 
     expect(
-      renderer.root.findByProps({ accessibilityLabel: 'HERE' }).props.accessibilityState
+      renderer.root.findByProps({ accessibilityLabel: 'ME' }).props.accessibilityState
     ).toEqual({ selected: true });
     expect(
       renderer.root.findByProps({ accessibilityLabel: 'FRIENDS' }).props.accessibilityState
@@ -42,7 +44,7 @@ describe('IslandTabs', () => {
   });
 
   it('reports the tab it was asked for', () => {
-    const onSelect = render('here', 0);
+    const onSelect = render('me', 0);
 
     act(() => renderer.root.findByProps({ accessibilityLabel: 'FRIENDS' }).props.onPress());
 
@@ -50,15 +52,15 @@ describe('IslandTabs', () => {
   });
 
   it('lets you re-select the tab you are on, which is how you leave a trace', () => {
-    const onSelect = render('here', 0);
+    const onSelect = render('me', 0);
 
-    act(() => renderer.root.findByProps({ accessibilityLabel: 'HERE' }).props.onPress());
+    act(() => renderer.root.findByProps({ accessibilityLabel: 'ME' }).props.onPress());
 
-    expect(onSelect).toHaveBeenCalledWith('here');
+    expect(onSelect).toHaveBeenCalledWith('me');
   });
 
   it('carries the presence pip while the roster is not the one saying it', () => {
-    render('here', 2);
+    render('me', 2);
 
     expect(
       renderer.root.findAllByProps({ testID: 'island-tab-presence-pip' }).length
@@ -72,8 +74,20 @@ describe('IslandTabs', () => {
   });
 
   it('has no pip to show when nobody is live', () => {
-    render('here', 0);
+    render('me', 0);
 
     expect(renderer.root.findAllByProps({ testID: 'island-tab-presence-pip' })).toHaveLength(0);
+  });
+
+  it('wears your own signal colour on ME while ME is the open tab', () => {
+    render('me', 0);
+
+    expect(renderer.root.findAllByProps({ tintColor: SIGNAL })).toHaveLength(1);
+  });
+
+  it('drops back to steel on ME once you are looking at friends', () => {
+    render('friends', 0);
+
+    expect(renderer.root.findAllByProps({ tintColor: SIGNAL })).toHaveLength(0);
   });
 });

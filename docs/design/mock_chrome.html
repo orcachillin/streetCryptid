@@ -67,8 +67,9 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
 
 /* ===== the island's segmented bar: the app's ONLY navigation =====
    Modelled on Find My — the sheet owns the switch, so the map's corners stay
-   free for map affordances. Contrast, not colour, carries selection: amber is
-   reserved for YOU, contact-green for real friend presence. */
+   free for map affordances. Contrast, not colour, carries selection; the one
+   exception is the glyph on ME, which wears your own signal colour so the tab
+   and your dot on the map read as the same thing. */
 .itabs{display:flex;gap:4px;padding:8px;border-top:1px solid var(--line);}
 .itab{flex:1;min-height:44px;border-radius:18px;display:flex;align-items:center;
   justify-content:center;gap:8px;color:var(--steel);}
@@ -77,6 +78,7 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
   text-transform:uppercase;line-height:16px;}
 .itab.on .tl{font-weight:700;}
 .itab .ti{position:relative;display:flex;align-items:center;justify-content:center;}
+.itab.on.me .ti{color:var(--me);}
 .itab .tp{position:absolute;right:-5px;top:-3px;width:8px;height:8px;border-radius:4px;
   background:var(--ok);border:1.5px solid var(--island);}
 .grab{width:38px;height:5px;border-radius:3px;background:rgba(138,166,178,.28);margin:2px auto 16px;}
@@ -85,7 +87,7 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
 .cov{display:flex;align-items:center;gap:15px;margin-top:18px;}
 .covbar{flex:1;display:flex;gap:2px;height:7px;align-items:stretch;}
 .covbar i{flex:1;border-radius:1px;background:var(--seg);display:block;}
-.covbar i.on{background:var(--amber);}
+.covbar i.on{background:var(--me);}
 .covnum{font-family:'Rajdhani';font-weight:700;font-size:20px;color:var(--ink);letter-spacing:.3px;line-height:1;}
 .covnum span{font-size:12px;color:var(--steel);margin-left:1px;}
 .detail{display:none;margin-top:17px;padding-top:15px;border-top:1px solid var(--line);}
@@ -147,10 +149,10 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
 .sm-sec:first-child{margin-top:6px;}
 .sm-row{display:flex;align-items:center;gap:15px;padding:14px 0;border-top:1px solid var(--line);}
 .sm-row:first-of-type{border-top:0;}
-.sm-row pre{font-family:'IBM Plex Mono',monospace;font-size:8.5px;line-height:1.1;color:var(--amber);white-space:pre;margin:0;width:72px;text-align:center;}
+.sm-row pre{font-family:'IBM Plex Mono',monospace;font-size:8.5px;line-height:1.1;color:var(--me);white-space:pre;margin:0;width:72px;text-align:center;}
 .sm-row .rc{flex:1;min-width:0;}
 .sm-row .rt{font-family:'Rajdhani';font-weight:700;font-size:22px;line-height:25px;color:var(--ink);}
-.sm-row .rt.you{color:var(--amber);}
+.sm-row .rt.you{color:var(--me);}
 .sm-row .rs{font-family:'IBM Plex Mono';font-weight:500;font-size:9px;letter-spacing:1px;color:var(--steel);margin-top:2px;text-transform:uppercase;}
 .sm-row .rv{font-family:'Rajdhani';font-weight:600;font-size:16px;color:var(--steel);}
 .sm-row .go{color:var(--steeld);font-size:15px;}
@@ -243,7 +245,11 @@ const THEMES={
 const params=new URLSearchParams(location.search);
 const themeName=params.get('theme')||'daybreak';
 const T=THEMES[themeName]||THEMES.deepsea;
-(function(){const r=document.documentElement;for(const k in T.css)r.style.setProperty(k,T.css[k]);})();
+// Your signal colour: the one you pick in Settings, and the one friends already
+// see for your dot. `?me=<hex>` swaps it. Amber (ACC) is now the frontier rim only.
+const ME_HEX=(function(){const v=params.get('me');return /^#[0-9a-f]{6}$/i.test(v||'')?v:'#2F9E6A';})();
+const ME=[1,3,5].map((i)=>parseInt(ME_HEX.slice(i,i+2),16));
+(function(){const r=document.documentElement;for(const k in T.css)r.style.setProperty(k,T.css[k]);r.style.setProperty('--me',ME_HEX);})();
 const TERR=T.TERR,WATER=T.WATER,PARK=T.PARK,ACC=T.ACC,BG=T.BG,VEIL=T.VEIL,CT=T.contact||[111,208,138];
 // ---- dataset (geography + zoom) ----
 const META={
@@ -283,13 +289,16 @@ const CRY={
    \ ~~ /
   _/'  '\_`,
 };
-// pos = normalized [x,y] on the hood canvas; shared = % of streets you've both walked
+// pos = normalized [x,y] on the hood canvas; shared = % of streets you've both walked;
+// color = the friend's OWN chosen signal, exactly as the app resolves it
 const FRIENDS=[
-  {handle:'wanderer', species:'mothman',   glyph:CRY.moth,  pos:[0.60,0.25], hood:'Volunteer Park', loc:'15th Ave E',  dist:'0.3 km', shared:41, online:true},
-  {handle:'nightowl', species:'jackalope', glyph:CRY.jack,  pos:[0.25,0.30], hood:'Fremont',        loc:'N 36th St',   dist:'2.1 km', shared:18, online:true},
-  {handle:'fog_dog',  species:'black shuck',glyph:CRY.hound, pos:[0.80,0.82], hood:'Ballard',        loc:'Market St',   dist:'4.4 km', shared:27, online:false, seen:'4h ago'},
+  {handle:'wanderer', species:'mothman',   glyph:CRY.moth,  color:'#5A8DEE', pos:[0.60,0.25], hood:'Volunteer Park', loc:'15th Ave E',  dist:'0.3 km', shared:41, online:true},
+  {handle:'nightowl', species:'jackalope', glyph:CRY.jack,  color:'#B06CE0', pos:[0.25,0.30], hood:'Fremont',        loc:'N 36th St',   dist:'2.1 km', shared:18, online:true},
+  {handle:'fog_dog',  species:'black shuck',glyph:CRY.hound, color:'#E0643C', pos:[0.80,0.82], hood:'Ballard',        loc:'Market St',   dist:'4.4 km', shared:27, online:false, seen:'4h ago'},
 ];
-const socialView = params.get('island') || 'friends'; // 'friends' | 'coverage'
+const hexRgb=(h)=>[1,3,5].map((i)=>parseInt(h.slice(i,i+2),16));
+// 'friends' | 'me'. coverage is kept as an alias for older render scripts.
+const socialView = (params.get('island') || 'friends') === 'coverage' ? 'me' : params.get('island') || 'friends';
 const showSettings = params.get('settings') === 'open';
 // Which bump stage the pairing strip is showing off.
 const bumpStage = params.get('bump') || 'armed'; // armed | searching | failed | off
@@ -395,7 +404,7 @@ function build(){
   // Labels never spill off the canvas or hide under the island; the budget goes
   // to the part of the map you can actually see.
   const TOP_LIMIT = 104;
-  const BOTTOM_LIMIT = H - (socialView === 'coverage' ? 252 : 412);
+  const BOTTOM_LIMIT = H - (socialView === 'me' ? 252 : 412);
   const inBox = (p) => p[0] > 8 && p[0] < W - 8 && p[1] > TOP_LIMIT && p[1] < BOTTOM_LIMIT;
   const placed = [];
   streetLabels = [];
@@ -515,7 +524,7 @@ function draw(){
     ctx.fillStyle=rgba(T.streetLabel,.92);ctx.fillText(L.nm,0,0);ctx.restore();}
   // park labels
   ctx.font="600 9px 'IBM Plex Mono',monospace";ctx.textAlign='center';
-  const PBOT=H-(socialView==='coverage'?252:412);
+  const PBOT=H-(socialView==='me'?252:412);
   for(const p of (window.__parkLabels||[])){
     const pw=p.nm.length*5.4;
     if(p.x-pw/2<10||p.x+pw/2>W-10||p.y<110||p.y>PBOT)continue;
@@ -525,15 +534,15 @@ function draw(){
 
   // friends: other live signals on the shared map (contact-green, below YOU in z-order)
   drawFriends();
-  // you-are-here locator (soft, no crosshair)
+  // you-are-here locator: your own signal colour, not the canvas amber
   ctx.save();ctx.translate(opPt[0],opPt[1]);
-  ctx.strokeStyle=rgba(ACC,.16);ctx.lineWidth=1.2;ctx.beginPath();ctx.arc(0,0,22,0,6.2832);ctx.stroke();
-  ctx.strokeStyle=rgba(ACC,.4);ctx.lineWidth=1.4;ctx.beginPath();ctx.arc(0,0,12,0,6.2832);ctx.stroke();
-  ctx.fillStyle=rgba(ACC,1);ctx.beginPath();ctx.arc(0,0,6,0,6.2832);ctx.fill();
+  ctx.strokeStyle=rgba(ME,.16);ctx.lineWidth=1.2;ctx.beginPath();ctx.arc(0,0,22,0,6.2832);ctx.stroke();
+  ctx.strokeStyle=rgba(ME,.4);ctx.lineWidth=1.4;ctx.beginPath();ctx.arc(0,0,12,0,6.2832);ctx.stroke();
+  ctx.fillStyle=rgba(ME,1);ctx.beginPath();ctx.arc(0,0,6,0,6.2832);ctx.fill();
   ctx.fillStyle='rgba(255,251,244,1)';ctx.beginPath();ctx.arc(0,0,2.3,0,6.2832);ctx.fill();ctx.restore();
   ctx.font="700 13px 'Rajdhani',sans-serif";ctx.textAlign='left';ctx.textBaseline='middle';
   ctx.fillStyle=T.labelBg;ctx.fillRect(opPt[0]+16,opPt[1]-9,40,18);
-  ctx.fillStyle=rgba(ACC,1);ctx.fillText('YOU',opPt[0]+22,opPt[1]);
+  ctx.fillStyle=rgba(ME,1);ctx.fillText('YOU',opPt[0]+22,opPt[1]);
 }
 
 function drawSectors(){
@@ -556,10 +565,11 @@ function drawFriends(){
   ctx.textAlign='left';ctx.textBaseline='middle';
   for(const f of FRIENDS){
     const x=W*f.pos[0], y=H*f.pos[1], on=f.online;
-    const col=on?CT:T.streetLabel, aa=on?1:0.5;
-    // presence ring (online only) + core dot
-    if(on){ctx.strokeStyle=rgba(CT,.14);ctx.lineWidth=1.2;ctx.beginPath();ctx.arc(x,y,16,0,6.2832);ctx.stroke();
-      ctx.strokeStyle=rgba(CT,.36);ctx.lineWidth=1.3;ctx.beginPath();ctx.arc(x,y,9.5,0,6.2832);ctx.stroke();}
+    const sig=hexRgb(f.color);
+    const col=on?sig:T.streetLabel, aa=on?1:0.5;
+    // presence ring (online only) + core dot, in the friend's own signal colour
+    if(on){ctx.strokeStyle=rgba(sig,.14);ctx.lineWidth=1.2;ctx.beginPath();ctx.arc(x,y,16,0,6.2832);ctx.stroke();
+      ctx.strokeStyle=rgba(sig,.36);ctx.lineWidth=1.3;ctx.beginPath();ctx.arc(x,y,9.5,0,6.2832);ctx.stroke();}
     ctx.fillStyle=rgba(col,aa);ctx.beginPath();ctx.arc(x,y,on?4.4:3.4,0,6.2832);ctx.fill();
     ctx.fillStyle=rgba(BG,1);ctx.beginPath();ctx.arc(x,y,on?1.7:1.3,0,6.2832);ctx.fill();
     // handle chip
@@ -573,13 +583,13 @@ function drawFriends(){
 // ==== ZOOM TIERS: city + region flip-dot fields (own projection, land-gated void) ====
 function drawYou(pt,label){
   ctx.save();ctx.translate(pt[0],pt[1]);
-  ctx.strokeStyle=rgba(ACC,.16);ctx.lineWidth=1.2;ctx.beginPath();ctx.arc(0,0,22,0,6.2832);ctx.stroke();
-  ctx.strokeStyle=rgba(ACC,.4);ctx.lineWidth=1.4;ctx.beginPath();ctx.arc(0,0,12,0,6.2832);ctx.stroke();
-  ctx.fillStyle=rgba(ACC,1);ctx.beginPath();ctx.arc(0,0,6,0,6.2832);ctx.fill();
+  ctx.strokeStyle=rgba(ME,.16);ctx.lineWidth=1.2;ctx.beginPath();ctx.arc(0,0,22,0,6.2832);ctx.stroke();
+  ctx.strokeStyle=rgba(ME,.4);ctx.lineWidth=1.4;ctx.beginPath();ctx.arc(0,0,12,0,6.2832);ctx.stroke();
+  ctx.fillStyle=rgba(ME,1);ctx.beginPath();ctx.arc(0,0,6,0,6.2832);ctx.fill();
   ctx.fillStyle='rgba(255,251,244,1)';ctx.beginPath();ctx.arc(0,0,2.3,0,6.2832);ctx.fill();ctx.restore();
   if(label){ctx.font="700 13px 'Rajdhani',sans-serif";ctx.textAlign='left';ctx.textBaseline='middle';
     ctx.fillStyle=T.labelBg;ctx.fillRect(pt[0]+16,pt[1]-9,label.length*8+14,18);
-    ctx.fillStyle=rgba(ACC,1);ctx.fillText(label,pt[0]+22,pt[1]);}
+    ctx.fillStyle=rgba(ME,1);ctx.fillText(label,pt[0]+22,pt[1]);}
 }
 function projFor(bbox,fit){const [bs,bw,bn,be]=bbox,l0=(bs+bn)/2,cl=Math.cos(l0*Math.PI/180),pw=(be-bw)*cl,ph=(bn-bs);
   const sc=(fit==='contain'?Math.min(W/pw,H/ph):Math.max(W/pw,H/ph)),ox=(W-pw*sc)/2,oy=(H-ph*sc)/2;
@@ -644,8 +654,8 @@ function renderRegion(){
   dotFieldZoom({landD,waterD:null,streetD:null,R:CELL,disc,cells,latticeAll:true});
   for(const c of (Z.cities||[])){if(c.name==='SEATTLE')continue;const p=PJ(c.lat,c.lon);if(p[0]<10||p[0]>W-10||p[1]<34||p[1]>H-22)continue;
     const nearSea=Math.hypot(p[0]-sea[0],p[1]-sea[1]);
-    if(c.visited){ctx.beginPath();ctx.fillStyle=rgba(ACC,.9);ctx.arc(p[0],p[1],3.4,0,6.2832);ctx.fill();
-      ctx.beginPath();ctx.strokeStyle=rgba(ACC,.32);ctx.lineWidth=1.2;ctx.arc(p[0],p[1],6.5,0,6.2832);ctx.stroke();
+    if(c.visited){ctx.beginPath();ctx.fillStyle=rgba(ME,.9);ctx.arc(p[0],p[1],3.4,0,6.2832);ctx.fill();
+      ctx.beginPath();ctx.strokeStyle=rgba(ME,.32);ctx.lineWidth=1.2;ctx.arc(p[0],p[1],6.5,0,6.2832);ctx.stroke();
       if(nearSea>26)labelChip(p[0],p[1]-12,c.name,T.streetLabel,0.92);}
     else{ctx.beginPath();ctx.fillStyle=rgba([116,146,160],.55);ctx.arc(p[0],p[1],2.1,0,6.2832);ctx.fill();
       if(nearSea>34)labelChip(p[0],p[1]-11,c.name,[112,142,156],0.6);}}
@@ -693,9 +703,9 @@ function renderRoster(host) {
       ? `<div class="d">${f.dist}</div>`
       : `<div class="d dim">offline</div>`;
     h += `<div class="fr ${f.online ? '' : 'off'}">
-      <div class="cav"><pre>${esc(f.glyph)}</pre><span class="cap">${esc(f.species)}</span></div>
+      <div class="cav"><pre style="color:${f.color}">${esc(f.glyph)}</pre><span class="cap">${esc(f.species)}</span></div>
       <div class="fmid">
-        <div class="h" style="color:var(--ok)">@${esc(f.handle)}</div>
+        <div class="h" style="color:${f.color}">@${esc(f.handle)}</div>
         <div class="l">${loc}</div>
       </div>
       <div class="frt">${right}</div>
@@ -729,7 +739,7 @@ function renderSettings(host) {
       <div class="rs">Relay · direct · BLE</div></div><div class="go">›</div></div>`;
 }
 const TAB_ICON = {
-  here: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.6 20.1 7v10L12 21.4 3.9 17V7L12 2.6Z"/></svg>',
+  me: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.6 20.1 7v10L12 21.4 3.9 17V7L12 2.6Z"/></svg>',
   friends:
     '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="8" r="3.2"/><path d="M3.4 19.8a5.6 5.6 0 0 1 11.2 0Z"/><circle cx="17" cy="9.4" r="2.6"/><path d="M14.9 19.8a6.9 6.9 0 0 0-1.6-4.3 4.5 4.5 0 0 1 7.3 4.3Z"/></svg>',
 };
@@ -739,8 +749,8 @@ function renderTabs(host) {
   const online = FRIENDS.filter((f) => f.online).length;
   const pip = socialView !== 'friends' && online > 0;
   host.innerHTML = `
-    <div class="itab ${socialView === 'coverage' ? 'on' : ''}">
-      <span class="ti">${TAB_ICON.here}</span><span class="tl">Here</span></div>
+    <div class="itab me ${socialView === 'me' ? 'on' : ''}">
+      <span class="ti">${TAB_ICON.me}</span><span class="tl">Me</span></div>
     <div class="itab ${socialView === 'friends' ? 'on' : ''}">
       <span class="ti">${TAB_ICON.friends}${pip ? '<i class="tp"></i>' : ''}</span>
       <span class="tl">Friends</span></div>`;
@@ -748,7 +758,7 @@ function renderTabs(host) {
 function populateSheet() {
   const host = document.getElementById('sheetbody');
   if (host) {
-    if (socialView === 'coverage') renderCoverage(host);
+    if (socialView === 'me') renderCoverage(host);
     else renderRoster(host);
   }
   const tabs = document.getElementById('itabs');

@@ -22,24 +22,30 @@ auto-switch with the OS color scheme.
 
 ## Color
 
-One accent per role. **Amber = you. A chosen profile signal = that friend. Teal ramp =
-the city.** Contact-green remains the default friend signal and the nearby-pairing
-system color; the app never assigns decorative colors.
+One accent per role. **Your chosen profile signal = you. A chosen profile signal = that
+friend. Amber = the frontier rim. Teal ramp = the city.** You and your friends are the
+same kind of thing on this map, so you are colored the same way they are: by the signal
+color you picked in Settings, which is also the one they already see for your dot.
+Contact-green remains the default friend signal and the nearby-pairing system color; the
+app never assigns decorative colors.
+
+Amber is the _canvas accent_, not a person. It survives in exactly two places: the
+frontier rim on acquired territory, and as the fallback for YOU before a profile exists.
 
 ### Daybreak (default, light)
 
-| Role                                        | Value                                          |
-| ------------------------------------------- | ---------------------------------------------- |
-| bg / void                                   | `#EEF2F5` / `#C9D3DA`                          |
-| panel (islands)                             | `#FFFFFF` (translucent)                        |
-| ink (headings/body)                         | `#152633`                                      |
-| steel / steel-dark (muted, AA-tuned)        | `#4D6675` / `#5B7480`                          |
-| hairline                                    | `#D6DEE4`                                      |
-| **amber (you)** / amber-dark for small text | `#C6791A` / `#9A5C10`                          |
-| **default friend / pairing signal**         | `#2F9E6A` (canvas `[38,150,100]`)              |
-| street ramp (unexplored→explored)           | light `[176,190,200]` → dark navy `[20,44,64]` |
-| water (shallow→deep)                        | `[150,192,224]` → `[30,104,170]`               |
-| park (faded→lush)                           | `[158,200,168]` → `[34,128,80]`                |
+| Role                                                 | Value                                          |
+| ---------------------------------------------------- | ---------------------------------------------- |
+| bg / void                                            | `#EEF2F5` / `#C9D3DA`                          |
+| panel (islands)                                      | `#FFFFFF` (translucent)                        |
+| ink (headings/body)                                  | `#152633`                                      |
+| steel / steel-dark (muted, AA-tuned)                 | `#4D6675` / `#5B7480`                          |
+| hairline                                             | `#D6DEE4`                                      |
+| **amber (frontier rim)** / amber-dark for small text | `#C6791A` / `#9A5C10`                          |
+| **default self + friend signal**                     | `#2F9E6A` (canvas `[38,150,100]`)              |
+| street ramp (unexplored→explored)                    | light `[176,190,200]` → dark navy `[20,44,64]` |
+| water (shallow→deep)                                 | `[150,192,224]` → `[30,104,170]`               |
+| park (faded→lush)                                    | `[158,200,168]` → `[34,128,80]`                |
 
 On the pale bg, **explored streets render dark** ("blueprint console"); unexplored
 drains toward the paper.
@@ -80,7 +86,8 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
 - **No personal path trace.** The low ping rate cannot support granular walked centerlines;
   your own movement remains sector reveal. Selecting a friend may connect their retained
   48-hour sharing fixes as a temporary, low-resolution breadcrumb in that friend's signal
-  color. Amber remains reserved for the frontier rim and the single **YOU** locator.
+  color. Amber remains reserved for the frontier rim; the **YOU** locator wears your own
+  signal color, exactly like every other person on the map.
 - **Zoom-aware (`?zoom=street|hood|city|region`).** Coverage _decreases_ outward
   (58 → 34 → 12 → 3 %). street = magnified neighborhood; hood = neighborhood; city =
   arterials + water + coastline; region = state silhouette + city nodes.
@@ -101,16 +108,18 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
 - **Settings is one gear, top-right,** in neutral steel — never an accent, because it is
   not a signal. It opens as a modal over the map with its own close affordance, so leaving
   it always returns you to exactly the view you left.
-- **One island, with its own segmented bar** (HERE · FRIENDS) along its bottom edge — the
+- **One island, with its own segmented bar** (ME · FRIENDS) along its bottom edge — the
   app's only navigation. Find My's model: the sheet owns the switch, so the map's corners
   stay about the map and nothing floats that isn't a map affordance. Selection is carried
-  by **contrast, not colour** (ink on a `seg` pill vs steel), because amber belongs to YOU
-  and green to real presence. The FRIENDS tab carries the live green pip _only_ while the
+  by **contrast, not colour** (ink on a `seg` pill vs steel) — with one exception: the ME
+  glyph wears **your** signal color while ME is open, so the tab and your dot on the map
+  read as the same thing. The FRIENDS tab carries the live green pip _only_ while the
   roster is not itself saying "N NEARBY".
-- **HERE is zoom-aware "where you are":** hero place name (Rajdhani) + one mono
-  uppercase sub + **one** flip-dot coverage bar + **one** % — retitled per tier
-  (BLOCKS / SECTORS / HOODS / CITIES). **No legend** (removed). Declutter law: one live
-  dot, one coverage number, one accent — never duplicate badges or status text.
+- **ME is zoom-aware "where you are":** hero place name (Rajdhani) + one mono
+  uppercase sub + **one** flip-dot coverage bar **in your signal color** (it counts ground
+  _you_ covered) + **one** % — retitled per tier (BLOCKS / SECTORS / HOODS / CITIES).
+  **No legend** (removed). Declutter law: one live dot, one coverage number, one accent —
+  never duplicate badges or status text.
 - **A selected trace is a drill-down, not a third tab.** It replaces the island's body while
   the bar stays lit on the tab you came from, so closing it returns you where you were and
   either tab is always a way out.
@@ -119,9 +128,10 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
 
 ## Social layer
 
-- Friends are a **second signal**, distinct from amber YOU. Each friend's chosen profile
-  color drives their screen-stable presence ring, core dot, `@handle` chip, ASCII form, and
-  selected breadcrumb; contact-green is the fallback for legacy profiles.
+- Friends are the **same kind of signal you are**, not a lesser one. Each friend's chosen
+  profile color drives their screen-stable presence ring, core dot, `@handle` chip, ASCII
+  form, and selected breadcrumb; contact-green is the fallback for legacy profiles. Your
+  own color works identically — the map has no privileged color for "me".
 - **Identity = an ASCII "cryptid" sigil** per friend (mothman / jackalope / black shuck…),
   mono and rendered in their chosen signal — terminal-native, not a mascot.
 - **Roster sheet:** cryptid avatar + `@handle` + location + a **"shared ground"** bar

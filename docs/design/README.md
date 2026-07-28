@@ -19,7 +19,7 @@ file:///Z:/CopilotApp/streetCryptid/docs/design/mock_chrome.html?theme=daybreak&
 
 `mock_chrome.html` is **canonical**: it mirrors the shipped app chrome — no tab bar, a
 settings FAB top-right, street/park name labels gated by zoom, and one island over the map
-carrying its own HERE / FRIENDS segmented bar (the app's only navigation). Only map
+carrying its own ME / FRIENDS segmented bar (the app's only navigation). Only map
 affordances float: layers and locate.
 
 `mock_social.html` is the earlier tab-era study (kept for the shared-ground bar and the
@@ -33,7 +33,8 @@ full-screen profile view). `mock_real.html` is the same base map **without** fri
 | `zoom`     | `street` · `hood` · `city` · `region`         | `hood`     | Scope + island retitle; coverage drops outward. Also gates which **street names** are drawn. |
 | `fog`      | `hex` · `soft` · `grid`                       | `hex`      | Reveal model. `hex` = sector chunks (canonical). |
 | `data`     | `caphill` · `greenlk` · `union` · `core`      | per-zoom   | Which OSM geography to render.               |
-| `island`   | `friends` · `coverage`                        | `friends`  | `mock_chrome.html` only. Which tab of the island's segmented bar is lit. |
+| `island`   | `me` · `friends`                              | `friends`  | `mock_chrome.html` only. Which tab of the island's segmented bar is lit (`coverage` is kept as an alias for `me`). |
+| `me`       | any `#rrggbb`                                 | `#2F9E6A`  | `mock_chrome.html` only. Your profile signal colour — drives the YOU locator, the coverage bar, the ME glyph and the identity row. |
 | `bump`     | `armed` · `searching` · `failed` · `off`      | `armed`    | `mock_chrome.html` only. Pairing strip state inside the FRIENDS tab. |
 | `settings` | `open`                                        | closed     | `mock_chrome.html` only. Pulls the settings sheet over the map. |
 | `social`   | `roster` · `profile`                          | `roster`   | `mock_social.html` only.                     |
@@ -76,7 +77,7 @@ Dark equivalents: `chrome-{1,2}-*-dark.png`, `zoom-*-dark.png`, `social-*-dark.p
 
 | File                       | What it is                                                        |
 | -------------------------- | ----------------------------------------------------------------- |
-| `mock_chrome.html`         | **Canonical**: the shipped chrome — no tab bar, settings FAB, zoom-gated street labels, one island with a HERE / FRIENDS segmented bar and bump pairing. |
+| `mock_chrome.html`         | **Canonical**: the shipped chrome — no tab bar, settings FAB, zoom-gated street labels, one island with a ME / FRIENDS segmented bar and bump pairing. |
 | `mock_social.html`         | Tab-era study: map engine, 4 zoom tiers, 3 themes, social layer, shared-ground bar. |
 | `mock_real.html`           | Base map + zoom, no friends.                                       |
 | `mapdata.js`               | `window.OSMSETS` — baked multi-geography OSM (caphill/greenlk/union/core). |

@@ -10,16 +10,19 @@ import {
   CoverageIsland,
   FriendHistoryIsland,
   FriendsIsland,
+  hexToRgb,
   LocateMeControl,
   MapIsland,
   MapLayersControl,
   MapView,
+  rgbToHex,
   SettingsControl,
   useMapTheme,
   type IslandTab,
   type MapFriendLocation,
   type MapReadout,
   type MapRosterFriend,
+  type Rgb,
 } from '@/features/map';
 import { BumpPairingStrip } from '@/features/social/components/bump-pairing-strip';
 import { FriendProfileSheet } from '@/features/social/components/friend-profile-sheet';
@@ -79,7 +82,7 @@ export default function MapScreenBody() {
   }
   const selectedEndpoint = selection.selectedId;
   const [explorationEnabled, setExplorationEnabled] = useState(true);
-  const [islandTab, setIslandTab] = useState<IslandTab>('here');
+  const [islandTab, setIslandTab] = useState<IslandTab>('me');
   const [profileEndpoint, setProfileEndpoint] = useState<string | null>(null);
   const [locateTarget, setLocateTarget] = useState<{
     requestId: number;
@@ -154,6 +157,17 @@ export default function MapScreenBody() {
     [friends, theme.chrome.green]
   );
   const nearbyCount = rosterFriends.filter((friend) => friend.online).length;
+  // Your own signal is the SAME color your friends already see for you — the one
+  // you picked in Settings. The theme accent is only the pre-profile fallback,
+  // which keeps amber for the frontier rim rather than for you.
+  const selfSignal = useMemo(
+    () => resolveSignalColor(profile?.color, rgbToHex(theme.canvas.accent)),
+    [profile?.color, theme.canvas.accent]
+  );
+  const selfInk = useMemo(
+    () => hexToRgb(selfSignal, theme.canvas.accent),
+    [selfSignal, theme.canvas.accent]
+  );
   const selfHistory = useMemo(() => {
     const history = selectFriendTrail(trail, SELF_AUTHOR);
     const sampled = sampleTrailForMap(history);
@@ -169,13 +183,13 @@ export default function MapScreenBody() {
       handle: profile.handle,
       sigil: profile.sigil,
       cryptidName: profile.cryptidName,
-      color: `rgb(${theme.canvas.accent.join(', ')})`,
+      color: selfSignal,
       location: { lat: selfFix.lat, lon: selfFix.lon },
       history: selfHistory.sampled,
       historyCount: selfHistory.history.length,
       latestTs: selfFix.ts,
     };
-  }, [profile, selfFix, selfHistory, theme.canvas.accent]);
+  }, [profile, selfFix, selfHistory, selfSignal]);
   const selectedHistory = selectedEndpoint === SELF_AUTHOR ? selfMapLocation : selectedFriend;
   // A selected trace is a drill-down *inside* the FRIENDS tab, not a third tab:
   // the roster is only actually on screen when nothing is drilled into. This is
@@ -196,7 +210,7 @@ export default function MapScreenBody() {
   const toggleSelection = useCallback(
     (id: string) => {
       if (selectedEndpoint !== id) {
-        setIslandTab('here');
+        setIslandTab('me');
         setSelection((current) => ({ ...current, selectedId: id }));
         return;
       }
@@ -230,7 +244,7 @@ export default function MapScreenBody() {
   // Tapping a roster row is the same gesture as tapping the locator: fly there
   // and open the trace. The roster steps aside so the map it just moved is
   // visible, but the FRIENDS tab stays lit — you drilled in from there, and
-  // closing the trace should put you back on the roster, not on HERE.
+  // closing the trace should put you back on the roster, not on ME.
   const focusRosterFriend = useCallback(
     (friendId: string) => {
       const target = mapFriends.find((friend) => friend.id === friendId);
@@ -327,6 +341,7 @@ export default function MapScreenBody() {
           selectedFriendId={selectedEndpoint === SELF_AUTHOR ? null : selectedEndpoint}
           selfHistory={selfHistory.sampled}
           selfSelected={selectedEndpoint === SELF_AUTHOR}
+          selfColor={selfInk}
           selfLocation={hasLiveSelfFix && selfFix ? { lat: selfFix.lat, lon: selfFix.lon } : null}
           selfFix={hasLiveSelfFix ? selfFix : null}
         />
@@ -362,7 +377,13 @@ export default function MapScreenBody() {
             theme={theme}
           />
         </View>
-        <MapIsland active={islandTab} nearby={nearbyCount} onSelect={selectIslandTab} theme={theme}>
+        <MapIsland
+          active={islandTab}
+          nearby={nearbyCount}
+          onSelect={selectIslandTab}
+          signal={selfSignal}
+          theme={theme}
+        >
           {selectedHistory ? (
             <FriendHistoryIsland
               friend={selectedHistory}
@@ -391,6 +412,7 @@ export default function MapScreenBody() {
               coverage={readout.coverage}
               placeName={readout.placeName}
               sectorsVisible={readout.sectorsVisible}
+              signal={selfSignal}
               theme={theme}
             />
           )}
@@ -441,6 +463,7 @@ function MapSession({
   onSelectSelf,
   selfHistory,
   selfSelected,
+  selfColor,
 }: {
   accessibilityLabel: string;
   initialCenter: MapFriendLocation['location'] | null;
@@ -455,6 +478,7 @@ function MapSession({
   onSelectSelf(): void;
   selfHistory: MapFriendLocation['history'];
   selfSelected: boolean;
+  selfColor: Rgb;
 }) {
   const [sessionCenter] = useState(initialCenter);
 
@@ -473,6 +497,7 @@ function MapSession({
       selfLocation={selfLocation}
       selfFix={selfFix}
       selfSelected={selfSelected}
+      selfColor={selfColor}
     />
   );
 }

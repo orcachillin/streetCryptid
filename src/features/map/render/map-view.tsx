@@ -51,6 +51,7 @@ import type {
   CameraState,
   LatLon,
   MapReadout,
+  Rgb,
   ScreenPoint,
   Viewport,
   WorldPoint,
@@ -183,6 +184,7 @@ export function MapView({
   selfFix = null,
   selfHistory = [],
   selfSelected = false,
+  selfColor = null,
   friends = [],
   selectedFriendId = null,
   explorationEnabled = true,
@@ -199,6 +201,12 @@ export function MapView({
   selfFix?: LocationFix | null;
   selfHistory?: readonly MapTrailLocation[];
   selfSelected?: boolean;
+  /**
+   * Your own signal color. Falls back to the theme accent (amber) when you have
+   * no profile yet — but once you have chosen one, YOU reads in your color
+   * everywhere, exactly as friends do. Amber then belongs only to the frontier rim.
+   */
+  selfColor?: Rgb | null;
   friends?: readonly MapFriendLocation[];
   selectedFriendId?: string | null;
   explorationEnabled?: boolean;
@@ -241,6 +249,8 @@ export function MapView({
     commit,
     prefetchAt,
   } = useMapEngine(viewport, initialCenter, selfFix, friendTargets);
+  // Your chosen signal, with the theme accent as the pre-profile fallback.
+  const selfInk = selfColor ?? theme.canvas.accent;
 
   // ── The one live view transform (anchor space → screen), UI-thread-owned ──
   const k = useSharedValue(1);
@@ -513,11 +523,11 @@ export function MapView({
             id: 'self',
             kind: 'self' as const,
             anchor: selfAnchor,
-            color: rgbToHex(theme.canvas.accent),
+            color: rgbToHex(selfInk),
           },
         ]
       : anchoredFriends;
-  }, [anchor, friends, selfAnchor, theme.canvas.accent, viewport]);
+  }, [anchor, friends, selfAnchor, selfInk, viewport]);
   const locatorClusters = useMemo(() => clusterMarkers(locatorAnchors), [locatorAnchors]);
   const selfTrailPoints = useMemo(
     () =>
@@ -532,7 +542,7 @@ export function MapView({
   const selectedTrail = useMemo(() => {
     if (!viewport) return null;
     if (selfSelected) {
-      return buildTrail(selfTrailPoints, `rgb(${theme.canvas.accent.join(', ')})`);
+      return buildTrail(selfTrailPoints, `rgb(${selfInk.join(', ')})`);
     }
     if (!selectedFriendId) return null;
     const friend = friends.find((candidate) => candidate.id === selectedFriendId);
@@ -542,15 +552,7 @@ export function MapView({
       screen: worldToScreen(anchor, viewport, latLonToWorld(location)),
     }));
     return buildTrail(points, friend.color);
-  }, [
-    anchor,
-    friends,
-    selectedFriendId,
-    selfSelected,
-    selfTrailPoints,
-    theme.canvas.accent,
-    viewport,
-  ]);
+  }, [anchor, friends, selectedFriendId, selfInk, selfSelected, selfTrailPoints, viewport]);
   useEffect(() => {
     const path = selectedTrail?.path;
     return () => path?.dispose();
@@ -928,7 +930,7 @@ export function MapView({
                   if (locator.kind === 'self') {
                     return (
                       <YouLocator
-                        accent={theme.canvas.accent}
+                        accent={selfInk}
                         key="self"
                         onPress={() => onSelectSelf?.()}
                         panelColor={theme.chrome.island}

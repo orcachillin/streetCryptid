@@ -29,10 +29,16 @@ interface CoverageIslandProps {
    * back in restores whatever state they left it in.
    */
   readonly sectorsVisible: boolean;
+  /**
+   * Your chosen signal color. The flip-dot bar counts ground *you* covered, so
+   * it fills in your color rather than the canvas amber, which now belongs only
+   * to the frontier rim.
+   */
+  readonly signal: string;
 }
 
 /**
- * The island's HERE body: hero place name, one mono sub line, one flip-dot
+ * The island's ME body: hero place name, one mono sub line, one flip-dot
  * coverage bar, one percentage — and nothing else (declutter law). Doubles as
  * the screen-reader text model for the canvas (PRODUCT.md P0).
  *
@@ -43,6 +49,7 @@ export function CoverageIsland({
   placeName,
   coverage,
   sectorsVisible,
+  signal,
 }: CoverageIslandProps) {
   const { chrome } = theme;
   const [isMinimized, setIsMinimized] = useState(false);
@@ -113,7 +120,7 @@ export function CoverageIsland({
               {Array.from({ length: SEGMENTS }, (_, i) => (
                 <View
                   key={i}
-                  style={[styles.seg, { backgroundColor: i < lit ? chrome.amber : chrome.seg }]}
+                  style={[styles.seg, { backgroundColor: i < lit ? signal : chrome.seg }]}
                 />
               ))}
             </View>

@@ -6,7 +6,7 @@ import type { CryptidTheme } from '@/constants/cryptid-theme';
 import { Spacing } from '@/constants/theme';
 
 /** The two things the bottom island can be about. */
-export type IslandTab = 'here' | 'friends';
+export type IslandTab = 'me' | 'friends';
 
 type SymbolName = ComponentProps<typeof SymbolView>['name'];
 
@@ -14,6 +14,12 @@ interface IslandTabsProps {
   readonly active: IslandTab;
   /** Friends currently sharing live — drives the contact-green presence pip. */
   readonly nearby: number;
+  /**
+   * Your chosen signal color. The ME tab is the one place in the chrome that
+   * is about a *person*, so it wears that person's color — the same one your
+   * friends see for your dot and trail.
+   */
+  readonly signal: string;
   readonly theme: CryptidTheme;
   onSelect(tab: IslandTab): void;
 }
@@ -26,16 +32,17 @@ interface IslandTabsProps {
  * free for map affordances (layers, locate) and nothing floats that isn't
  * about the map itself.
  */
-export function IslandTabs({ active, nearby, theme, onSelect }: IslandTabsProps) {
+export function IslandTabs({ active, nearby, signal, theme, onSelect }: IslandTabsProps) {
   const { chrome } = theme;
 
   return (
     <View accessibilityRole="tablist" style={[styles.bar, { borderTopColor: chrome.islandBorder }]}>
       <IslandTabButton
-        active={active === 'here'}
+        active={active === 'me'}
         icon={{ ios: 'hexagon.fill', android: 'hexagon', web: 'hexagon' }}
-        label="HERE"
-        onPress={() => onSelect('here')}
+        label="ME"
+        onPress={() => onSelect('me')}
+        signal={signal}
         theme={theme}
       />
       <IslandTabButton
@@ -59,6 +66,7 @@ function IslandTabButton({
   icon,
   label,
   pip = false,
+  signal,
   theme,
   onPress,
 }: {
@@ -67,13 +75,18 @@ function IslandTabButton({
   readonly icon: SymbolName;
   readonly label: string;
   readonly pip?: boolean;
+  /** Identity color for the glyph, when this tab is about a person. */
+  readonly signal?: string;
   readonly theme: CryptidTheme;
   onPress(): void;
 }) {
   const { chrome } = theme;
-  // Contrast, not colour, carries selection: amber stays reserved for YOU and
-  // the frontier rim, contact-green for actual friend presence.
+  // Contrast, not colour, carries selection — the label goes ink-on-seg when
+  // active and steel when not. The glyph is the one exception: a tab that
+  // stands for a person wears that person's signal colour while it is open,
+  // which is what makes the ME tab and your dot on the map read as one thing.
   const tint = active ? chrome.ink : chrome.steel;
+  const glyph = active && signal ? signal : tint;
 
   return (
     <Pressable
@@ -89,7 +102,7 @@ function IslandTabButton({
       ]}
     >
       <View style={styles.iconWrap}>
-        <SymbolView name={icon} size={16} tintColor={tint} />
+        <SymbolView name={icon} size={16} tintColor={glyph} />
         {pip ? (
           <View
             style={[styles.pip, { backgroundColor: chrome.green, borderColor: chrome.island }]}

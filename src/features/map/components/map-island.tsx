@@ -9,6 +9,8 @@ interface MapIslandProps {
   readonly children: ReactNode;
   /** Friends currently sharing live — surfaced on the FRIENDS tab. */
   readonly nearby: number;
+  /** Your chosen signal color, worn by the ME tab. */
+  readonly signal: string;
   readonly theme: CryptidTheme;
   onSelect(tab: IslandTab): void;
 }
@@ -22,7 +24,7 @@ interface MapIslandProps {
  *
  * Children supply their own padding; the shell deliberately supplies none.
  */
-export function MapIsland({ active, children, nearby, theme, onSelect }: MapIslandProps) {
+export function MapIsland({ active, children, nearby, signal, theme, onSelect }: MapIslandProps) {
   const { chrome } = theme;
 
   return (
@@ -30,7 +32,13 @@ export function MapIsland({ active, children, nearby, theme, onSelect }: MapIsla
       style={[styles.island, { backgroundColor: chrome.island, borderColor: chrome.islandBorder }]}
     >
       {children}
-      <IslandTabs active={active} nearby={nearby} onSelect={onSelect} theme={theme} />
+      <IslandTabs
+        active={active}
+        nearby={nearby}
+        onSelect={onSelect}
+        signal={signal}
+        theme={theme}
+      />
     </View>
   );
 }

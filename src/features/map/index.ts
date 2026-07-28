@@ -12,5 +12,6 @@ export { MapLayersControl } from './components/map-layers-control';
 export { SettingsControl } from './components/settings-control';
 export { MapView } from './render/map-view';
 export type { MapFriendLocation } from './render/map-view';
+export { hexToRgb, rgbToHex } from './core/color';
 export { useMapTheme } from './hooks/use-map-theme';
-export type { MapReadout } from './core/types';
+export type { MapReadout, Rgb } from './core/types';
