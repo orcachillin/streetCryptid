@@ -397,6 +397,14 @@ jobs:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       DISTRIBUTOR_BASE_URL: ${{ secrets.DISTRIBUTOR_BASE_URL }}
     steps:
+      # The notify script (scripts/notify-discord-thread.sh) lives in the repo,
+      # so this job needs the sources checked out just like the build jobs.
+      - name: Check out PR revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
       # Posts one combined build reply into the PR's Discord forum thread
       # (creating it on the first commit). Install links go ONLY to Discord; the
       # PR comment carries no link or host — just build status and the hidden
@@ -423,38 +431,18 @@ jobs:
           [[ -n "${IOS_PATH:-}" ]] && ios_url="${base}${IOS_PATH}"
           [[ -n "${ANDROID_PATH:-}" ]] && android_url="${base}${ANDROID_PATH}"
 
-          # Register the internal host + full install URLs as log masks in THIS
-          # job before anything can print them. The notify script also masks them,
-          # but it does so on stdout (dropped to /dev/null below), so those
-          # directives never reach the runner here — these do. With them active,
-          # the internal URL renders as *** everywhere: the surfaced stderr, the
-          # PR comment, any accidental echo. (base is already the *** secret; the
-          # reconstructed full URLs and the bare host are the belt-and-suspenders.)
-          host="${base#*://}"
-          host="${host%%/*}"
-          [[ -n "$host" ]] && echo "::add-mask::$host"
-          [[ -n "$ios_url" ]] && echo "::add-mask::$ios_url"
-          [[ -n "$android_url" ]] && echo "::add-mask::$android_url"
-
           # Post to Discord with all output suppressed — no URL, host, or webhook
           # may reach the public logs. The thread id comes back in a file, and a
           # redacted diagnostic (HTTP code / stage only) in another for debugging.
           tid_file="$RUNNER_TEMP/discord-thread-id"
           diag_file="$RUNNER_TEMP/discord-diag"
-          err_file="$RUNNER_TEMP/discord-stderr"
           : > "$tid_file"
           : > "$diag_file"
-          : > "$err_file"
           discord_ok=1
-          # Only stdout is dropped (the "Posted…" success line). The script's
-          # stderr is safe to surface — test-eas-ci-log-isolation.sh proves it
-          # never contains a URL, host, or the webhook — and it carries the real
-          # error (HTTP status + stage) the diag file was meant to, but more
-          # descriptively. Capturing it here is what makes a failed run debuggable.
           if ! DISCORD_THREAD_ID="$existing_thread" DISCORD_THREAD_ID_OUT="$tid_file" \
                 NOTIFY_DIAG_FILE="$diag_file" \
                 IOS_URL="$ios_url" ANDROID_URL="$android_url" \
-                bash scripts/notify-discord-thread.sh >/dev/null 2>"$err_file"; then
+                bash scripts/notify-discord-thread.sh >/dev/null 2>&1; then
             discord_ok=0
           fi
           thread_id="$(cat "$tid_file" 2>/dev/null || true)"
@@ -488,13 +476,8 @@ jobs:
 
           if [[ "$discord_ok" -ne 1 ]]; then
             echo "Failed to notify the Discord build thread." >&2
-            # Both channels are redacted by construction (HTTP status + stage only,
-            # never a URL, host, webhook, or response body) — see
-            # test-eas-ci-log-isolation.sh.
-            if [[ -s "$err_file" ]]; then
-              echo "Notify script output:" >&2
-              cat "$err_file" >&2
-            fi
+            # The diagnostic is redacted by construction (HTTP status + stage only,
+            # never a URL, host, webhook, or response body).
             if [[ -s "$diag_file" ]]; then
               echo "Diagnostic:" >&2
               cat "$diag_file" >&2
