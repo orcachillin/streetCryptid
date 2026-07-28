@@ -69,6 +69,7 @@ import {
 import { useMapPerfRunner } from '../perf/use-map-perf-runner';
 import { FriendLocator } from './friend-locator';
 import { FriendLocatorStack } from './friend-locator-stack';
+import { MapLabelLayer } from './map-labels';
 import { RegionRenderCache } from './render-bundle-cache';
 import {
   makeCellStateImage,
@@ -906,6 +907,19 @@ export function MapView({
               </Canvas>
             )}
           </View>
+
+          {viewport && region ? (
+            <MapLabelLayer
+              anchor={anchor}
+              chipColor={theme.chrome.island}
+              labels={region.labels}
+              palette={theme.canvas}
+              scale={k}
+              translateX={tx}
+              translateY={ty}
+              viewport={viewport}
+            />
+          ) : null}
 
           {viewport
             ? locatorClusters.map((cluster) => {

@@ -9,14 +9,18 @@ import { useCryptidProfile } from '@/features/account/hooks/use-cryptid-profile'
 import {
   CoverageIsland,
   FriendHistoryIsland,
+  FriendsControl,
+  FriendsIsland,
   LocateMeControl,
   MapLayersControl,
   MapView,
   useMapTheme,
   type MapFriendLocation,
   type MapReadout,
+  type MapRosterFriend,
 } from '@/features/map';
 import { sampleTrailForMap, selectFriendTrail } from '@/features/social/core/history';
+import { formatPresenceAge } from '@/features/social/core/presence';
 import type { LocationFix } from '@/features/social/core/types';
 import { useLocationSharing } from '@/features/social/hooks/use-location-sharing';
 import { SELF_AUTHOR, type TrailPoint } from '@/features/social/net/background/trail-store';
@@ -52,6 +56,7 @@ export default function MapScreenBody() {
   }
   const selectedEndpoint = selection.selectedId;
   const [explorationEnabled, setExplorationEnabled] = useState(true);
+  const [rosterOpen, setRosterOpen] = useState(false);
   const [locateTarget, setLocateTarget] = useState<{
     requestId: number;
     location: MapFriendLocation['location'];
@@ -107,6 +112,24 @@ export default function MapScreenBody() {
     () => mapFriends.find((friend) => friend.id === selectedEndpoint) ?? null,
     [mapFriends, selectedEndpoint]
   );
+  // The roster carries EVERY friend, not just the ones with a fix — a friend who
+  // has gone dark should dim in place rather than silently vanish from the list.
+  const rosterFriends = useMemo<MapRosterFriend[]>(
+    () =>
+      friends.map((presence) => ({
+        id: presence.friend.endpointId,
+        handle: presence.friend.handle,
+        sigil: presence.friend.sigil,
+        cryptidName: presence.friend.cryptidName,
+        color: resolveSignalColor(presence.friend.color, theme.chrome.green),
+        distanceM: presence.distanceM,
+        status: formatPresenceAge(presence.ageMs).toUpperCase(),
+        online: presence.freshness === 'live' || presence.freshness === 'recent',
+        locatable: presence.fix !== null,
+      })),
+    [friends, theme.chrome.green]
+  );
+  const nearbyCount = rosterFriends.filter((friend) => friend.online).length;
   const selfHistory = useMemo(() => {
     const history = selectFriendTrail(trail, SELF_AUTHOR);
     const sampled = sampleTrailForMap(history);
@@ -144,6 +167,7 @@ export default function MapScreenBody() {
   const toggleSelection = useCallback(
     (id: string) => {
       if (selectedEndpoint !== id) {
+        setRosterOpen(false);
         setSelection((current) => ({ ...current, selectedId: id }));
         return;
       }
@@ -164,6 +188,32 @@ export default function MapScreenBody() {
       location: { lat: selfFix.lat, lon: selfFix.lon },
     }));
   }, [selfFix]);
+  // The roster and a friend's trace both want the one island slot, so opening the
+  // roster closes whatever trace was showing. Otherwise the toggle would look
+  // dead whenever a locator happened to be selected.
+  const toggleRoster = useCallback(() => {
+    if (rosterOpen) {
+      setRosterOpen(false);
+      return;
+    }
+    closeHistory();
+    setRosterOpen(true);
+  }, [closeHistory, rosterOpen]);
+  // Tapping a roster row is the same gesture as tapping the locator: fly there
+  // and open the trace. The roster steps aside so the map it just moved is visible.
+  const focusRosterFriend = useCallback(
+    (friendId: string) => {
+      const target = mapFriends.find((friend) => friend.id === friendId);
+      if (!target) return;
+      setRosterOpen(false);
+      setSelection((current) => ({ ...current, selectedId: friendId }));
+      setLocateTarget((current) => ({
+        requestId: (current?.requestId ?? 0) + 1,
+        location: target.location,
+      }));
+    },
+    [mapFriends]
+  );
 
   const pct = Math.round(readout.coverage * 100);
   const friendNames = mapFriends.map((friend) => friend.handle).join(', ');
@@ -249,6 +299,12 @@ export default function MapScreenBody() {
             onChange={setExplorationEnabled}
             theme={theme}
           />
+          <FriendsControl
+            nearby={nearbyCount}
+            onPress={toggleRoster}
+            open={rosterOpen}
+            theme={theme}
+          />
           <LocateMeControl
             disabled={!hasLiveSelfFix || !selfFix}
             onPress={locateSelf}
@@ -262,6 +318,8 @@ export default function MapScreenBody() {
             self={selectedEndpoint === SELF_AUTHOR}
             theme={theme}
           />
+        ) : rosterOpen ? (
+          <FriendsIsland friends={rosterFriends} onSelect={focusRosterFriend} theme={theme} />
         ) : (
           <CoverageIsland
             coverage={readout.coverage}

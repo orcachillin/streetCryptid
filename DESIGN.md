@@ -84,6 +84,13 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
 - **Zoom-aware (`?zoom=street|hood|city|region`).** Coverage _decreases_ outward
   (58 → 34 → 12 → 3 %). street = magnified neighborhood; hood = neighborhood; city =
   arterials + water + coastline; region = state silhouette + city nodes.
+- **Names arrive with the zoom, not with the geometry.** A road can be drawn long before it
+  is worth naming: motorways label from far out, residential streets and service alleys stay
+  anonymous until you are actually in the neighbourhood. A name also has to _fit_ inside its
+  way's on-screen length, so short stubs suppress themselves. One label per name (a road
+  crossing four tiles is still one road), rotated to the road's heading, colliding labels
+  dropped rather than stacked. Park names sit on the polygon centroid, gated on on-screen
+  area. Mono, uppercase, letter-spaced — the map's text is data, not chrome.
 
 ## Chrome & layout — Apple-Maps "islands"
 
@@ -105,7 +112,11 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
   mono and rendered in their chosen signal — terminal-native, not a mascot.
 - **Roster sheet:** cryptid avatar + `@handle` + location + a **"shared ground"** bar
   (% of streets you've _both_ walked). Hairline dividers, **not** cards; offline rows
-  dimmed.
+  dimmed. The roster is also the map's second island — the friends toggle swaps the bottom
+  island from "where you are" to "who is out there" without leaving the map, and tapping a
+  row flies there and opens that friend's trace. _Shipped without the shared-ground bar:_
+  the app has no overlap metric yet, and the declutter law says a fabricated number is worse
+  than no number.
 - **Friend profile:** big cryptid hero, sharing state, retained 48-hour location timeline,
   and a **"View trail on map"** CTA.
 - Social metric is **shared ground (overlap)**, never a leaderboard. Friend colors are
