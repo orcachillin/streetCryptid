@@ -53,12 +53,12 @@ describe('BumpPairingStrip', () => {
 
   function render(pairing: PairingSnapshot | null, handlers = {}) {
     const onCommit = jest.fn().mockResolvedValue(undefined);
-    const onRetry = jest.fn().mockResolvedValue(undefined);
+    const onArm = jest.fn().mockResolvedValue(undefined);
     act(() => {
       renderer = create(
         <BumpPairingStrip
+          onArm={onArm}
           onCommit={onCommit}
-          onRetry={onRetry}
           pairing={pairing}
           sensor={sensor}
           theme={CryptidThemes.daybreak}
@@ -66,7 +66,7 @@ describe('BumpPairingStrip', () => {
         />
       );
     });
-    return { onCommit, onRetry };
+    return { onCommit, onArm };
   }
 
   it('says why pairing is impossible in Expo Go rather than offering a dead button', () => {
@@ -104,7 +104,7 @@ describe('BumpPairingStrip', () => {
   });
 
   it('parks on a retry after a miss instead of silently re-arming', async () => {
-    const { onRetry } = render(
+    const { onArm } = render(
       snapshot({
         bump: {
           stage: 'failed',
@@ -122,7 +122,30 @@ describe('BumpPairingStrip', () => {
     await act(async () => {
       button.props.onPress();
     });
-    expect(onRetry).toHaveBeenCalled();
+    expect(onArm).toHaveBeenCalled();
+  });
+
+  it('offers a way in from idle, because idle is where a failed arm lands you', async () => {
+    const { onArm } = render(snapshot());
+
+    expect(text(renderer)).toContain('BUMP IS OFF');
+    const button = renderer.root.findByProps({
+      accessibilityLabel: 'Arm bump to meet a nearby friend',
+    });
+    await act(async () => {
+      button.props.onPress();
+    });
+    expect(onArm).toHaveBeenCalled();
+  });
+
+  it('shows why arming failed rather than pretending it is still arming', () => {
+    render(snapshot(), { error: 'Bluetooth permission was declined.' });
+
+    expect(text(renderer)).toContain('BUMP DID NOT START');
+    expect(text(renderer)).toContain('Bluetooth permission was declined.');
+    expect(renderer.root.findAllByProps({ accessibilityLabel: 'Try bump again' })).not.toHaveLength(
+      0
+    );
   });
 });
 

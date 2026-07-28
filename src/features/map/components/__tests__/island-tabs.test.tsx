@@ -17,12 +17,11 @@ describe('IslandTabs', () => {
     act(() => renderer?.unmount());
   });
 
-  function render(active: 'me' | 'friends', nearby: number, onSelect = jest.fn(), signal = SIGNAL) {
+  function render(active: 'me' | 'friends', onSelect = jest.fn(), signal = SIGNAL) {
     act(() => {
       renderer = create(
         <IslandTabs
           active={active}
-          nearby={nearby}
           onSelect={onSelect}
           signal={signal}
           theme={CryptidThemes.daybreak}
@@ -33,7 +32,7 @@ describe('IslandTabs', () => {
   }
 
   it('marks only the active tab as selected', () => {
-    render('me', 0);
+    render('me');
 
     expect(
       renderer.root.findByProps({ accessibilityLabel: 'ME' }).props.accessibilityState
@@ -44,7 +43,7 @@ describe('IslandTabs', () => {
   });
 
   it('reports the tab it was asked for', () => {
-    const onSelect = render('me', 0);
+    const onSelect = render('me');
 
     act(() => renderer.root.findByProps({ accessibilityLabel: 'FRIENDS' }).props.onPress());
 
@@ -52,41 +51,27 @@ describe('IslandTabs', () => {
   });
 
   it('lets you re-select the tab you are on, which is how you leave a trace', () => {
-    const onSelect = render('me', 0);
+    const onSelect = render('me');
 
     act(() => renderer.root.findByProps({ accessibilityLabel: 'ME' }).props.onPress());
 
     expect(onSelect).toHaveBeenCalledWith('me');
   });
 
-  it('carries the presence pip while the roster is not the one saying it', () => {
-    render('me', 2);
-
-    expect(
-      renderer.root.findAllByProps({ testID: 'island-tab-presence-pip' }).length
-    ).toBeGreaterThan(0);
-  });
-
-  it('drops the pip once the roster itself states how many are nearby', () => {
-    render('friends', 2);
-
-    expect(renderer.root.findAllByProps({ testID: 'island-tab-presence-pip' })).toHaveLength(0);
-  });
-
-  it('has no pip to show when nobody is live', () => {
-    render('me', 0);
+  it('carries no presence badge — the roster header owns that, in words', () => {
+    render('me');
 
     expect(renderer.root.findAllByProps({ testID: 'island-tab-presence-pip' })).toHaveLength(0);
   });
 
   it('wears your own signal colour on ME while ME is the open tab', () => {
-    render('me', 0);
+    render('me');
 
     expect(renderer.root.findAllByProps({ tintColor: SIGNAL })).toHaveLength(1);
   });
 
   it('drops back to steel on ME once you are looking at friends', () => {
-    render('friends', 0);
+    render('friends');
 
     expect(renderer.root.findAllByProps({ tintColor: SIGNAL })).toHaveLength(0);
   });

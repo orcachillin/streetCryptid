@@ -113,8 +113,12 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
   stay about the map and nothing floats that isn't a map affordance. Selection is carried
   by **contrast, not colour** (ink on a `seg` pill vs steel) — with one exception: the ME
   glyph wears **your** signal color while ME is open, so the tab and your dot on the map
-  read as the same thing. The FRIENDS tab carries the live green pip _only_ while the
-  roster is not itself saying "N NEARBY".
+  read as the same thing. The bar carries **no badge**: presence is already stated by the
+  roster header ("N NEARBY", in words) and by the live dots on the map, and a pip would be
+  a third voice saying it.
+- **The island floats clear of the system gesture bar** — `insets.bottom` plus a real
+  margin, on both platforms. (It once special-cased Android to skip the inset, which was
+  true only while a native tab bar was consuming it.)
 - **ME is zoom-aware "where you are":** hero place name (Rajdhani) + one mono
   uppercase sub + **one** flip-dot coverage bar **in your signal color** (it counts ground
   _you_ covered) + **one** % — retitled per tier (BLOCKS / SECTORS / HOODS / CITIES).
@@ -145,11 +149,13 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
 - **Friend profile:** big cryptid hero, sharing state, retained 48-hour location timeline,
   and a **"View trail on map"** CTA. It is reached from the chevron on a roster row — the
   row itself asks "where are they", the chevron asks "who are they".
-- **Pairing lives in the FRIENDS tab, not on a screen.** Selecting that tab IS arming
-  bump: two phones showing their rosters and touching is the whole gesture. There is no
-  ARM button and no pairing mode. Drilling into a friend's trace disarms it, so the radio
-  never runs behind an island that isn't the roster. The island shows a single honest
-  status line, and only
+- **Pairing lives in the FRIENDS tab, not on a screen.** Arming is one deliberate tap on
+  ARM BUMP; after that, two phones touching is the whole gesture. Opening the tab used to
+  arm the radio implicitly, which was wrong twice over: it fired an OS Bluetooth prompt
+  from a view transition, and when that prompt was declined the strip had nothing left to
+  offer. Idle is therefore always a **recoverable** state with a button in it, never a
+  spinner. Leaving the tab or backgrounding the app disarms, so the radio never runs behind
+  an island that isn't the roster. The island shows a single honest status line, and only
   offers a tap-to-pair button when motion detection cannot close the deal. The blocking
   ASCII verification and the discovery celebration are full overlays — that is the one
   moment a mistake hands a stranger your location, so it earns the whole screen.

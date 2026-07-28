@@ -35,7 +35,7 @@ full-screen profile view). `mock_real.html` is the same base map **without** fri
 | `data`     | `caphill` · `greenlk` · `union` · `core`      | per-zoom   | Which OSM geography to render.               |
 | `island`   | `me` · `friends`                              | `friends`  | `mock_chrome.html` only. Which tab of the island's segmented bar is lit (`coverage` is kept as an alias for `me`). |
 | `me`       | any `#rrggbb`                                 | `#2F9E6A`  | `mock_chrome.html` only. Your profile signal colour — drives the YOU locator, the coverage bar, the ME glyph and the identity row. |
-| `bump`     | `armed` · `searching` · `failed` · `off`      | `armed`    | `mock_chrome.html` only. Pairing strip state inside the FRIENDS tab. |
+| `bump`     | `idle` · `armed` · `searching` · `failed` · `off` | `idle`     | `mock_chrome.html` only. Pairing strip state inside the FRIENDS tab. `idle` is the resting state and offers ARM BUMP. |
 | `settings` | `open`                                        | closed     | `mock_chrome.html` only. Pulls the settings sheet over the map. |
 | `social`   | `roster` · `profile`                          | `roster`   | `mock_social.html` only.                     |
 | `who`      | `wanderer` · `nightowl` · `fog_dog`           | first      | `mock_social.html` only — which friend `profile` shows. |

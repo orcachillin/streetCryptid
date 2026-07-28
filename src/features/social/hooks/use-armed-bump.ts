@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 
 import { useBumpToPair, type BumpSensorState } from './use-bump-to-pair';
@@ -9,27 +9,36 @@ import type { PairingSnapshot } from '../net/location-sharing';
 export interface ArmedBump {
   readonly pairing: PairingSnapshot | null;
   readonly sensor: BumpSensorState;
-  /** True while this surface is the reason bump is armed. */
+  /** True while this surface is allowed to hold the radio open. */
   readonly live: boolean;
+  /** Why the last arm attempt did not take, if it did not. */
+  readonly error: string | null;
+  /** True while an arm attempt is in flight. */
+  readonly arming: boolean;
+  arm(): Promise<void>;
   commit(): Promise<void>;
-  retry(): Promise<void>;
 }
 
 /**
- * Bump is armed for as long as the roster is actually on screen and the app is
- * in front — that is, the island's FRIENDS tab is selected and nothing is
- * drilled into.
+ * Owns the Bump window for whichever surface is showing the roster.
  *
- * There is no ARM button and no pairing screen: showing the roster IS declaring
- * "I am trying to meet someone". Leaving the tab, drilling into a friend's trace,
- * or backgrounding the app disarms, so the radio is never quietly left listening.
+ * Arming is an explicit tap, not a side effect of opening the tab. Arming has to
+ * ask for Bluetooth permission and can fail for half a dozen honest reasons
+ * (no native module, radio off, another pairing already running), and the
+ * service leaves the stage on `idle` when it does — so a silent auto-arm could
+ * fail once and then sit there looking armed forever, with nothing to press.
+ * A button makes the failure visible and recoverable, and puts the OS permission
+ * prompt behind a deliberate gesture.
  *
- * Arming only ever fires from `idle`, so a failure parks the strip on TRY AGAIN
- * instead of spinning the radio in a retry loop.
+ * Disarming stays automatic: leaving the tab, drilling into a friend's trace, or
+ * backgrounding the app cancels the window, so the radio is never quietly left
+ * listening.
  */
 export function useArmedBump(active: boolean): ArmedBump {
   const { pairing, armBump, commitBump, cancelBump } = useLocationSharing();
   const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
+  const [error, setError] = useState<string | null>(null);
+  const [arming, setArming] = useState(false);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', setAppState);
@@ -38,16 +47,23 @@ export function useArmedBump(active: boolean): ArmedBump {
 
   const live = active && appState === 'active';
   const stage = pairing?.bump.stage ?? 'idle';
-  const ready = Boolean(pairing?.available && pairing.ready && pairing.capabilities?.available);
-  // A verification or a fresh discovery owns the screen; do not race it with a new bump.
-  const busy = Boolean(pairing?.discoveredFriend) || Boolean(pairing?.verifications.length);
 
-  useEffect(() => {
-    if (!live || !ready || busy || stage !== 'idle') return;
-    void armBump().catch(() => {
-      // The provider owns the actionable error; the strip renders the failed stage.
-    });
-  }, [armBump, busy, live, ready, stage]);
+  const arm = useCallback(async () => {
+    setArming(true);
+    setError(null);
+    try {
+      await armBump();
+    } catch (armError: unknown) {
+      setError(armError instanceof Error ? armError.message : 'Bump could not start.');
+    } finally {
+      setArming(false);
+    }
+  }, [armBump]);
+
+  // Derived, not stored-and-cleared: a failure only describes the attempt that
+  // produced it, so it is simply not shown once the radio is open or you have
+  // walked away from the roster.
+  const visibleError = stage === 'idle' && live ? error : null;
 
   useEffect(() => {
     if (live || stage === 'idle') return;
@@ -57,5 +73,5 @@ export function useArmedBump(active: boolean): ArmedBump {
   const sensor = useBumpToPair(live && stage === 'armed' && !pairing?.discoveredFriend, commitBump);
   usePairingHaptics(pairing, live);
 
-  return { pairing, sensor, live, commit: commitBump, retry: armBump };
+  return { pairing, sensor, live, error: visibleError, arming, arm, commit: commitBump };
 }

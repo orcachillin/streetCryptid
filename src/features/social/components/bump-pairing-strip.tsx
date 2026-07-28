@@ -10,15 +10,17 @@ import type { PairingSnapshot } from '../net/location-sharing';
 interface BumpPairingStripProps {
   readonly pairing: PairingSnapshot | null;
   readonly sensor: BumpSensorState;
+  /** Why the last arm attempt did not take, if it did not. */
+  readonly error?: string | null;
   readonly theme: CryptidTheme;
+  onArm(): Promise<void>;
   onCommit(): Promise<void>;
-  onRetry(): Promise<void>;
 }
 
 interface StripCopy {
   readonly status: string;
   readonly detail: string;
-  readonly action: 'bump' | 'retry' | null;
+  readonly action: 'arm' | 'bump' | 'retry' | null;
   readonly listening: boolean;
 }
 
@@ -26,19 +28,29 @@ function secondsRemaining(expiresAt: number | null): number {
   return expiresAt ? Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)) : 0;
 }
 
+const ACTION_LABEL = { arm: 'ARM BUMP', bump: 'BUMP NOW', retry: 'TRY AGAIN' } as const;
+const ACTION_HINT = {
+  arm: 'Arm bump to meet a nearby friend',
+  bump: 'Pair with the phone touching this one',
+  retry: 'Try bump again',
+} as const;
+
 /**
  * Reads out the pairing radio inside the island's FRIENDS tab.
  *
- * There is no ARM button: the tab being selected is the arming gesture (see
- * `useArmedBump`). What is left is a single honest status line, so the strip is a
- * readout first and a control only when motion detection cannot close the deal.
+ * Arming is a deliberate tap, not a consequence of opening the tab: it asks for
+ * Bluetooth permission and can fail honestly, so it needs a control the user can
+ * press again. The strip is a status line first and a control exactly when there
+ * is something to do — arm it, bump it by hand if motion detection cannot close
+ * the deal, or try once more after a miss.
  */
 export function BumpPairingStrip({
   pairing,
   sensor,
+  error = null,
   theme,
+  onArm,
   onCommit,
-  onRetry,
 }: BumpPairingStripProps) {
   const { chrome } = theme;
   const [working, setWorking] = useState(false);
@@ -52,7 +64,7 @@ export function BumpPairingStrip({
     return () => clearInterval(timer);
   }, [pairing?.bump.expiresAt]);
 
-  const copy = stripCopy(pairing, sensor, stage);
+  const copy = stripCopy(pairing, sensor, stage, error);
 
   const run = async (action: () => Promise<void>): Promise<void> => {
     if (working) return;
@@ -90,19 +102,17 @@ export function BumpPairingStrip({
 
       {copy.action ? (
         <Pressable
-          accessibilityLabel={
-            copy.action === 'bump' ? 'Pair with the phone touching this one' : 'Try bump again'
-          }
+          accessibilityLabel={ACTION_HINT[copy.action]}
           accessibilityRole="button"
           disabled={working}
-          onPress={() => void run(copy.action === 'bump' ? onCommit : onRetry)}
+          onPress={() => void run(copy.action === 'bump' ? onCommit : onArm)}
           style={({ pressed }) => [
             styles.action,
             { borderColor: chrome.green, opacity: working ? 0.4 : pressed ? 0.62 : 1 },
           ]}
         >
           <Text style={[styles.actionLabel, { color: chrome.green }]}>
-            {working ? 'WORKING' : copy.action === 'bump' ? 'BUMP NOW' : 'TRY AGAIN'}
+            {working ? 'WORKING' : ACTION_LABEL[copy.action]}
           </Text>
         </Pressable>
       ) : null}
@@ -113,7 +123,8 @@ export function BumpPairingStrip({
 function stripCopy(
   pairing: PairingSnapshot | null,
   sensor: BumpSensorState,
-  stage: string
+  stage: string,
+  error: string | null
 ): StripCopy {
   if (!pairing?.available) {
     return {
@@ -172,10 +183,13 @@ function stripCopy(
         listening: false,
       };
     default:
+      // Idle is a real, recoverable resting state, not a spinner: an arm attempt
+      // that fails leaves the stage here, and so does a window that simply ran
+      // out. Either way there has to be something to press.
       return {
-        status: 'ARMING BUMP',
-        detail: 'Open the FRIENDS tab on both phones.',
-        action: null,
+        status: error ? 'BUMP DID NOT START' : 'BUMP IS OFF',
+        detail: error ?? 'Arm both phones, then touch their top edges together.',
+        action: error ? 'retry' : 'arm',
         listening: false,
       };
   }

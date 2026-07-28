@@ -317,8 +317,10 @@ period.
 ## 9b. Nearby and remote exchange
 
 The island's **FRIENDS tab** is the pairing surface; there is no separate pairing mode
-and no Friends route. Selecting that tab arms bump, and drilling into a friend's trace
-disarms it again.
+and no Friends route. Arming is an explicit tap on **ARM BUMP** inside that tab — leaving
+the tab, drilling into a friend's trace, or backgrounding the app disarms again. The tab
+itself does not arm: doing so raised the OS Bluetooth prompt from a view transition, and a
+declined prompt left the strip with no action to offer.
 
 ### Nearby: Bump over iroh BLE
 

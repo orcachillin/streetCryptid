@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { resolveSignalColor } from '@/constants/signal-colors';
@@ -156,7 +156,6 @@ export default function MapScreenBody() {
       })),
     [friends, theme.chrome.green]
   );
-  const nearbyCount = rosterFriends.filter((friend) => friend.online).length;
   // Your own signal is the SAME color your friends already see for you — the one
   // you picked in Settings. The theme accent is only the pre-profile fallback,
   // which keeps amber for the frontier rim rather than for you.
@@ -322,8 +321,12 @@ export default function MapScreenBody() {
     : selfCenterSeen
       ? 'self-anchored'
       : 'fallback-anchored';
-  // Native tabs already apply Android's bottom inset to their screen content.
-  const islandBottomPadding = Platform.OS === 'android' ? Spacing.two : insets.bottom + Spacing.two;
+  // The island floats clear of the system gesture bar on BOTH platforms. Android
+  // used to be special-cased to ignore the bottom inset because the native tab
+  // bar consumed it — there is no tab bar any more, so ignoring it parks the
+  // segmented bar right on top of the gesture handle. `Spacing.three` matches the
+  // island's own side inset, so it sits in a square margin rather than a slot.
+  const islandBottomPadding = insets.bottom + Spacing.three;
 
   return (
     <View style={[styles.container, { backgroundColor: theme.chrome.bg }]}>
@@ -377,13 +380,7 @@ export default function MapScreenBody() {
             theme={theme}
           />
         </View>
-        <MapIsland
-          active={islandTab}
-          nearby={nearbyCount}
-          onSelect={selectIslandTab}
-          signal={selfSignal}
-          theme={theme}
-        >
+        <MapIsland active={islandTab} onSelect={selectIslandTab} signal={selfSignal} theme={theme}>
           {selectedHistory ? (
             <FriendHistoryIsland
               friend={selectedHistory}
@@ -398,8 +395,9 @@ export default function MapScreenBody() {
               onSelect={focusRosterFriend}
               pairing={
                 <BumpPairingStrip
+                  error={bump.error}
+                  onArm={bump.arm}
                   onCommit={bump.commit}
-                  onRetry={bump.retry}
                   pairing={bump.pairing}
                   sensor={bump.sensor}
                   theme={theme}

@@ -29,6 +29,9 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
 .statusbar .time{font-family:'Rajdhani';font-weight:700;font-size:17px;color:var(--ink);letter-spacing:.5px;}
 .statusbar .ico{display:flex;gap:7px;align-items:center;color:var(--ink);}
 .notch{position:absolute;top:12px;left:50%;transform:translateX(-50%);width:120px;height:30px;background:#05090f;border-radius:0 0 18px 18px;z-index:6;}
+/* the OS gesture bar the island has to clear */
+.homebar{position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:140px;height:5px;
+  border-radius:3px;background:var(--ink);opacity:.5;z-index:9;}
 /* full-bleed map */
 .mapwrap{position:absolute;inset:0;overflow:hidden;background:var(--navy);}
 #map{position:absolute;inset:0;}
@@ -56,8 +59,11 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
   box-shadow:0 10px 24px -14px var(--shadow);}
 .cbtn.on{color:var(--amber);border-color:var(--amberd);}
 
-/* bottom island — one card: a body, then its own segmented bar */
-.island{position:absolute;left:14px;right:14px;bottom:16px;z-index:8;
+/* bottom island — one card: a body, then its own segmented bar.
+   `bottom` clears the system gesture bar (34px of safe-area inset) plus the
+   island's own 16px margin. The mock draws that gesture bar, because the app
+   shipped a version that sat right on top of it. */
+.island{position:absolute;left:14px;right:14px;bottom:50px;z-index:8;
   background:var(--island);
   backdrop-filter:blur(20px) saturate(1.1);
   border:1px solid var(--islandbd);border-radius:26px;
@@ -79,8 +85,6 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
 .itab.on .tl{font-weight:700;}
 .itab .ti{position:relative;display:flex;align-items:center;justify-content:center;}
 .itab.on.me .ti{color:var(--me);}
-.itab .tp{position:absolute;right:-5px;top:-3px;width:8px;height:8px;border-radius:4px;
-  background:var(--ok);border:1.5px solid var(--island);}
 .grab{width:38px;height:5px;border-radius:3px;background:rgba(138,166,178,.28);margin:2px auto 16px;}
 .st{font-family:'Rajdhani';font-weight:700;font-size:30px;color:var(--ink);letter-spacing:.2px;line-height:1;}
 .nb{font-family:'IBM Plex Mono';font-size:10.5px;letter-spacing:1.7px;color:var(--steel);margin-top:9px;text-transform:uppercase;}
@@ -104,8 +108,8 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
 .shd i{width:10px;height:10px;border-radius:50%;background:var(--ok);}
 .shd i.dim{background:var(--seg);}
 
-/* bump strip: opening the island IS arming. No ARM button, and deliberately
-   NO second pip - the header above already owns the one live dot. */
+/* bump strip: arming is a deliberate tap, so idle always offers a button.
+   Deliberately NO pip - the header above already owns the one live dot. */
 .pair{display:flex;align-items:center;gap:14px;padding:9px 0 13px;border-bottom:1px solid var(--line);}
 .pair .pc{flex:1;min-width:0;}
 .pair .ps{font-family:'IBM Plex Mono';font-weight:600;font-size:10px;letter-spacing:1.2px;
@@ -203,6 +207,7 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;
       <div class="sm-body" id="settingsbody"></div>
     </div>
   </div>
+  <div class="homebar"></div>
 </div></div></div>
 
 <script src="mapdata.js"></script>
@@ -301,7 +306,7 @@ const hexRgb=(h)=>[1,3,5].map((i)=>parseInt(h.slice(i,i+2),16));
 const socialView = (params.get('island') || 'friends') === 'coverage' ? 'me' : params.get('island') || 'friends';
 const showSettings = params.get('settings') === 'open';
 // Which bump stage the pairing strip is showing off.
-const bumpStage = params.get('bump') || 'armed'; // armed | searching | failed | off
+const bumpStage = params.get('bump') || 'idle'; // idle | armed | searching | failed | off
 
 const fogMode=(ZOOM==='city'||ZOOM==='region')?'hex':(params.get('fog')||'hex');   // 'soft' | 'hex' | 'grid'
 let CELL=+params.get('cell')||(fogMode==='grid'?64:42);
@@ -404,7 +409,7 @@ function build(){
   // Labels never spill off the canvas or hide under the island; the budget goes
   // to the part of the map you can actually see.
   const TOP_LIMIT = 104;
-  const BOTTOM_LIMIT = H - (socialView === 'me' ? 252 : 412);
+  const BOTTOM_LIMIT = H - (socialView === 'me' ? 286 : 446);
   const inBox = (p) => p[0] > 8 && p[0] < W - 8 && p[1] > TOP_LIMIT && p[1] < BOTTOM_LIMIT;
   const placed = [];
   streetLabels = [];
@@ -524,7 +529,7 @@ function draw(){
     ctx.fillStyle=rgba(T.streetLabel,.92);ctx.fillText(L.nm,0,0);ctx.restore();}
   // park labels
   ctx.font="600 9px 'IBM Plex Mono',monospace";ctx.textAlign='center';
-  const PBOT=H-(socialView==='me'?252:412);
+  const PBOT=H-(socialView==='me'?286:446);
   for(const p of (window.__parkLabels||[])){
     const pw=p.nm.length*5.4;
     if(p.x-pw/2<10||p.x+pw/2>W-10||p.y<110||p.y>PBOT)continue;
@@ -672,8 +677,15 @@ function segs(pct, N) {
   return h;
 }
 
-// The bump strip has no ARM button: the island being open IS the arming gesture.
+// Arming is a deliberate tap. Opening the island used to arm the radio, which
+// meant a declined Bluetooth prompt left the strip stuck saying "ARMING BUMP"
+// with nothing to press — idle now always offers a way back in.
 const BUMP = {
+  idle: {
+    s: 'Bump is off',
+    d: 'Arm both phones, then touch their top edges together.',
+    b: 'Arm bump',
+  },
   armed: {
     s: 'Ready for impact',
     d: 'Touch the top edges of both phones together.',
@@ -681,12 +693,12 @@ const BUMP = {
     live: true,
   },
   searching: { s: 'Reading 2 signals', d: 'Ranking the nearest phone and verifying it.', live: true },
-  failed: { s: 'Bump missed', d: 'Keep both phones on the FRIENDS tab and try once more.', b: 'Try again' },
+  failed: { s: 'Bump missed', d: 'Arm it again and touch the phones together.', b: 'Try again' },
   off: { s: 'Bluetooth offline', d: 'Turn Bluetooth on to meet someone in person.' },
 };
 function renderRoster(host) {
   const online = FRIENDS.filter((f) => f.online).length;
-  const bp = BUMP[bumpStage] || BUMP.armed;
+  const bp = BUMP[bumpStage] || BUMP.idle;
   let h = `<div class="shd"><i class="${online ? '' : 'dim'}"></i><h2>${online} nearby</h2></div>
     <div class="pair">
       <div class="pc">
@@ -743,16 +755,15 @@ const TAB_ICON = {
   friends:
     '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="8" r="3.2"/><path d="M3.4 19.8a5.6 5.6 0 0 1 11.2 0Z"/><circle cx="17" cy="9.4" r="2.6"/><path d="M14.9 19.8a6.9 6.9 0 0 0-1.6-4.3 4.5 4.5 0 0 1 7.3 4.3Z"/></svg>',
 };
-// One live dot, and only while the roster is not already saying "N NEARBY" —
-// the declutter law forbids stating presence twice.
+// The bar carries no badge. Presence belongs to the roster header ("N NEARBY",
+// in words) and to the live dots on the map — a pip here would be a third voice
+// saying the same thing.
 function renderTabs(host) {
-  const online = FRIENDS.filter((f) => f.online).length;
-  const pip = socialView !== 'friends' && online > 0;
   host.innerHTML = `
     <div class="itab me ${socialView === 'me' ? 'on' : ''}">
       <span class="ti">${TAB_ICON.me}</span><span class="tl">Me</span></div>
     <div class="itab ${socialView === 'friends' ? 'on' : ''}">
-      <span class="ti">${TAB_ICON.friends}${pip ? '<i class="tp"></i>' : ''}</span>
+      <span class="ti">${TAB_ICON.friends}</span>
       <span class="tl">Friends</span></div>`;
 }
 function populateSheet() {
@@ -771,7 +782,7 @@ function populateSheet() {
   // Controls ride on the island's top edge, whichever body is showing.
   const island = document.getElementById('sheet'),
     controls = document.querySelector('.controls');
-  if (island && controls) controls.style.bottom = island.offsetHeight + 16 + 14 + 'px';
+  if (island && controls) controls.style.bottom = island.offsetHeight + 50 + 14 + 'px';
 }
 async function main() {
   layout();
