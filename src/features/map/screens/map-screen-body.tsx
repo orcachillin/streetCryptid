@@ -1,10 +1,10 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { resolveSignalColor } from '@/constants/signal-colors';
-import { Spacing, TopTabInset } from '@/constants/theme';
+import { Spacing } from '@/constants/theme';
 import { useCryptidProfile } from '@/features/account/hooks/use-cryptid-profile';
 import {
   CoverageIsland,
@@ -14,20 +14,28 @@ import {
   LocateMeControl,
   MapLayersControl,
   MapView,
+  SettingsControl,
   useMapTheme,
   type MapFriendLocation,
   type MapReadout,
   type MapRosterFriend,
 } from '@/features/map';
+import { BumpPairingStrip } from '@/features/social/components/bump-pairing-strip';
+import { FriendProfileSheet } from '@/features/social/components/friend-profile-sheet';
 import { sampleTrailForMap, selectFriendTrail } from '@/features/social/core/history';
 import { formatPresenceAge } from '@/features/social/core/presence';
 import type { LocationFix } from '@/features/social/core/types';
+import { useArmedBump } from '@/features/social/hooks/use-armed-bump';
 import { useLocationSharing } from '@/features/social/hooks/use-location-sharing';
 import { SELF_AUTHOR, type TrailPoint } from '@/features/social/net/background/trail-store';
 
 /**
  * The map IS the product: full-bleed dot field with a single floating bottom
  * island. The island doubles as the accessible text model for the canvas.
+ *
+ * There is no tab bar and no header. Everything else in the app is either an
+ * island over this canvas, a sheet pulled over it, or Settings behind the one
+ * piece of top chrome.
  *
  * This is the shared screen body. It touches Skia (via `MapView`), so on web it
  * must only mount AFTER CanvasKit has loaded — `map-screen.web.tsx` gates it
@@ -38,9 +46,23 @@ export default function MapScreenBody() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { profile } = useCryptidProfile();
-  const params = useLocalSearchParams<{ friend?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    friend?: string | string[];
+    pair?: string | string[];
+  }>();
   const requestedFriendId = Array.isArray(params.friend) ? params.friend[0] : params.friend;
-  const { selfFix, hasLiveSelfFix, trail, friends, locationStatus } = useLocationSharing();
+  const pairToken = Array.isArray(params.pair) ? params.pair[0] : params.pair;
+  const {
+    selfFix,
+    hasLiveSelfFix,
+    trail,
+    friends,
+    locationStatus,
+    snapshot,
+    pairFromInput,
+    toggleShare,
+    removeFriend,
+  } = useLocationSharing();
   const routeFriendId = requestedFriendId ?? null;
   const [selection, setSelection] = useState(() => ({
     requestId: routeFriendId,
@@ -57,6 +79,8 @@ export default function MapScreenBody() {
   const selectedEndpoint = selection.selectedId;
   const [explorationEnabled, setExplorationEnabled] = useState(true);
   const [rosterOpen, setRosterOpen] = useState(false);
+  const [profileEndpoint, setProfileEndpoint] = useState<string | null>(null);
+  const bump = useArmedBump(rosterOpen);
   const [locateTarget, setLocateTarget] = useState<{
     requestId: number;
     location: MapFriendLocation['location'];
@@ -215,6 +239,32 @@ export default function MapScreenBody() {
     [mapFriends]
   );
 
+  const profilePresence = useMemo(
+    () => friends.find((presence) => presence.friend.endpointId === profileEndpoint) ?? null,
+    [friends, profileEndpoint]
+  );
+  const profileHistory = useMemo(
+    () => (profilePresence ? selectFriendTrail(trail, profilePresence.friend.endpointId) : []),
+    [profilePresence, trail]
+  );
+
+  // A `streetcryptid://…?token=` invite lands here now that the Friends route is
+  // gone. Redeem it once, show the roster so the handshake has somewhere to land,
+  // then drop the token from the URL so a re-render cannot replay it.
+  const redeemedPairToken = useRef<string | null>(null);
+  useEffect(() => {
+    if (!snapshot?.ready || !pairToken || redeemedPairToken.current === pairToken) return;
+    redeemedPairToken.current = pairToken;
+    setRosterOpen(true);
+    void pairFromInput(pairToken)
+      .catch(() => {
+        // The provider surfaces the actionable error; consume the rejection here.
+      })
+      .finally(() => {
+        router.setParams({ pair: undefined });
+      });
+  }, [pairFromInput, pairToken, router, snapshot?.ready]);
+
   const pct = Math.round(readout.coverage * 100);
   const friendNames = mapFriends.map((friend) => friend.handle).join(', ');
   const locationCopy =
@@ -275,15 +325,17 @@ export default function MapScreenBody() {
           selfFix={hasLiveSelfFix ? selfFix : null}
         />
       </View>
-      {/* Tile attribution. `pointerEvents="none"` on the layer AND the text so it
-          never eats a pan or a tap — it is decoration over a full-bleed canvas. */}
-      <View
-        pointerEvents="none"
-        style={[styles.attributionLayer, { top: insets.top + TopTabInset + Spacing.three }]}
-      >
-        <Text style={[styles.attribution, { color: theme.chrome.steel }]} numberOfLines={1}>
+      {/* The app's only top chrome: attribution on the left, Settings on the right.
+          `pointerEvents="box-none"` so the empty span between them still pans the map. */}
+      <View pointerEvents="box-none" style={[styles.topLayer, { top: insets.top + Spacing.three }]}>
+        <Text
+          pointerEvents="none"
+          style={[styles.attribution, { color: theme.chrome.steel }]}
+          numberOfLines={1}
+        >
           © OPENSTREETMAP
         </Text>
+        <SettingsControl onPress={() => router.push('/settings')} theme={theme} />
       </View>
       {/* Controls ride directly above the island so both stay in thumb reach.
           Living inside the bottom-anchored stack (rather than at a fixed offset)
@@ -319,7 +371,21 @@ export default function MapScreenBody() {
             theme={theme}
           />
         ) : rosterOpen ? (
-          <FriendsIsland friends={rosterFriends} onSelect={focusRosterFriend} theme={theme} />
+          <FriendsIsland
+            friends={rosterFriends}
+            onOpenProfile={setProfileEndpoint}
+            onSelect={focusRosterFriend}
+            pairing={
+              <BumpPairingStrip
+                onCommit={bump.commit}
+                onRetry={bump.retry}
+                pairing={bump.pairing}
+                sensor={bump.sensor}
+                theme={theme}
+              />
+            }
+            theme={theme}
+          />
         ) : (
           <CoverageIsland
             coverage={readout.coverage}
@@ -329,6 +395,33 @@ export default function MapScreenBody() {
           />
         )}
       </View>
+
+      <FriendProfileSheet
+        history={profileHistory}
+        presence={profilePresence}
+        visible={profilePresence !== null}
+        sharing={
+          profilePresence
+            ? (snapshot?.sharingWith ?? []).includes(profilePresence.friend.endpointId)
+            : false
+        }
+        onClose={() => setProfileEndpoint(null)}
+        onToggleShare={async (on) => {
+          if (!profilePresence) return;
+          await toggleShare(profilePresence.friend.endpointId, on);
+        }}
+        onViewMap={() => {
+          if (!profilePresence) return;
+          const endpointId = profilePresence.friend.endpointId;
+          setProfileEndpoint(null);
+          focusRosterFriend(endpointId);
+        }}
+        onRemove={async () => {
+          if (!profilePresence) return;
+          await removeFriend(profilePresence.friend.endpointId);
+          setProfileEndpoint(null);
+        }}
+      />
     </View>
   );
 }
@@ -408,11 +501,17 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
     marginBottom: Spacing.three,
   },
-  attributionLayer: {
+  topLayer: {
     position: 'absolute',
     left: Spacing.three,
+    right: Spacing.three,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.three,
   },
   attribution: {
+    flexShrink: 1,
     fontFamily: 'IBMPlexMono_500Medium',
     fontSize: 10,
     letterSpacing: 1.2,

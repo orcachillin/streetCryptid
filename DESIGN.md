@@ -94,8 +94,13 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
 
 ## Chrome & layout — Apple-Maps "islands"
 
-- **Full-bleed map.** Floating only: a right-side control stack (layers · friends toggle
-  [green] · locate [amber]) and one bottom island.
+- **Full-bleed map. There is no tab bar and no header.** The map is the whole app. The
+  only chrome is floating: attribution and a Settings gear across the top, a right-side
+  control stack (layers · friends toggle [green] · locate [amber]), and one bottom island.
+  Everything else is either an island over the map or a sheet pulled over it.
+- **Settings is one gear, top-right,** in neutral steel — never an accent, because it is
+  not a signal. It opens as a modal over the map with its own close affordance, so leaving
+  it always returns you to exactly the view you left.
 - **Bottom island is zoom-aware "where you are":** hero place name (Rajdhani) + one mono
   uppercase sub + **one** flip-dot coverage bar + **one** % — retitled per tier
   (BLOCKS / SECTORS / HOODS / CITIES). **No legend** (removed). Declutter law: one live
@@ -118,7 +123,14 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
   the app has no overlap metric yet, and the declutter law says a fabricated number is worse
   than no number.
 - **Friend profile:** big cryptid hero, sharing state, retained 48-hour location timeline,
-  and a **"View trail on map"** CTA.
+  and a **"View trail on map"** CTA. It is reached from the chevron on a roster row — the
+  row itself asks "where are they", the chevron asks "who are they".
+- **Pairing lives in the roster island, not on a screen.** Opening the island IS arming
+  bump: two phones showing their rosters and touching is the whole gesture. There is no
+  ARM button and no pairing mode. The island shows a single honest status line, and only
+  offers a tap-to-pair button when motion detection cannot close the deal. The blocking
+  ASCII verification and the discovery celebration are full overlays — that is the one
+  moment a mistake hands a stranger your location, so it earns the whole screen.
 - Social metric is **shared ground (overlap)**, never a leaderboard. Friend colors are
   chosen identity signals, never an app-assigned rainbow.
 

@@ -1,10 +1,11 @@
 import { useCallback } from 'react';
-import { ScrollView, StyleSheet, View, useColorScheme } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { Pressable, ScrollView, StyleSheet, View, useColorScheme } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
-import { CryptidThemes, MaxContentWidth, Spacing, TopTabInset } from '@/constants/theme';
+import { CryptidThemes, MaxContentWidth, Spacing } from '@/constants/theme';
 import { StashSettingRow } from '@/features/social/components/stash-setting-row';
 import { useLocationSharing } from '@/features/social/hooks/use-location-sharing';
 import { useTheme } from '@/hooks/use-theme';
@@ -15,24 +16,30 @@ import { AppProvenanceDetails } from '../components/app-provenance';
 import { AuthorIdRow } from '../components/author-id-row';
 import { DebugLocationControls } from '../components/debug-location-controls';
 import { EventLogPanel } from '../components/event-log-panel';
+import { IdentityRow } from '../components/identity-row';
 import { LocationAccessRow } from '../components/location-access-row';
 import { RelayOnlyRow } from '../components/relay-only-row';
 import { TransportDiagnostic } from '../components/transport-diagnostic';
+import { PairLinkAction } from '@/features/social/components/pair-link-action';
 
 /**
- * The centralized Settings tab: offline-delivery (trail stash) opt-in, a live transport
- * diagnostic covering every path the node can use, and the force-relay-only switch. Everything
- * degrades honestly when the native module is absent (web / Expo Go): the diagnostic shows
- * "unavailable"/"n/a" rows and the toggles persist as preferences.
+ * Settings, pulled over the map as a sheet — there is no tab bar to return to, so
+ * it owns its own close affordance.
+ *
+ * Beyond transports and offline delivery, this is where the two social controls
+ * that are not "who is out there" now live: your own identity, and the invite-link
+ * pairing fallback for when two phones cannot physically meet.
  */
 export default function SettingsScreen() {
   const theme = useTheme();
   const scheme = useColorScheme();
   const chrome = CryptidThemes[scheme === 'dark' ? 'deepsea' : 'daybreak'].chrome;
   const insets = useSafeAreaInsets();
+  const router = useRouter();
 
   const {
     snapshot,
+    pairing,
     transportReport,
     refreshPairing,
     refreshTransportDiagnostics,
@@ -41,6 +48,9 @@ export default function SettingsScreen() {
     disclosureStatus,
     acknowledgeLocationDisclosure,
     forceLocationPush,
+    createPairInvite,
+    pairFromInput,
+    respondPair,
   } = useLocationSharing();
 
   useFocusEffect(
@@ -61,16 +71,41 @@ export default function SettingsScreen() {
       contentContainerStyle={[
         styles.content,
         {
-          paddingTop: insets.top + TopTabInset + Spacing.four,
+          paddingTop: insets.top + Spacing.four,
           paddingBottom: insets.bottom + Spacing.six,
         },
       ]}
     >
       <View style={styles.header}>
-        <ThemedText type="subtitle">Settings</ThemedText>
-        <ThemedText type="small" themeColor="textSecondary">
-          Transports and offline delivery
+        <View style={styles.headerCopy}>
+          <ThemedText type="subtitle">Settings</ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">
+            Identity, transports, and offline delivery
+          </ThemedText>
+        </View>
+        <Pressable
+          accessibilityLabel="Close settings"
+          accessibilityRole="button"
+          hitSlop={6}
+          onPress={() => router.back()}
+          style={({ pressed }) => [
+            styles.close,
+            { borderColor: theme.backgroundSelected, opacity: pressed ? 0.55 : 1 },
+          ]}
+        >
+          <SymbolView
+            name={{ ios: 'xmark', android: 'close', web: 'close' }}
+            size={17}
+            tintColor={theme.text}
+          />
+        </Pressable>
+      </View>
+
+      <View style={styles.section}>
+        <ThemedText type="smallBold" themeColor="textSecondary" style={styles.sectionLabel}>
+          IDENTITY
         </ThemedText>
+        <IdentityRow accent={chrome.amber} />
       </View>
 
       <View style={styles.section}>
@@ -82,6 +117,26 @@ export default function SettingsScreen() {
           activeColor={chrome.green}
           availableColor={chrome.amber}
         />
+      </View>
+
+      <View style={styles.section}>
+        <ThemedText type="smallBold" themeColor="textSecondary" style={styles.sectionLabel}>
+          PAIRING LINKS
+        </ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          Bump lives on the map: open the friends island and touch two phones together. Use a link
+          only when you cannot meet in person.
+        </ThemedText>
+        {pairing ? (
+          <PairLinkAction
+            accent={chrome.green}
+            errorAccent={chrome.amber}
+            pairing={pairing}
+            onCreateInvite={createPairInvite}
+            onPairInput={pairFromInput}
+            onReject={(sessionId) => respondPair(sessionId, false)}
+          />
+        ) : null}
       </View>
 
       <View style={styles.section}>
@@ -152,7 +207,22 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   header: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: Spacing.three,
+    justifyContent: 'space-between',
+  },
+  headerCopy: {
+    flex: 1,
     gap: Spacing.one,
+  },
+  close: {
+    alignItems: 'center',
+    borderRadius: 22,
+    borderWidth: StyleSheet.hairlineWidth,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
   },
   section: {
     gap: Spacing.two,

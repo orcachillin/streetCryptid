@@ -1,4 +1,5 @@
 import { SymbolView } from 'expo-symbols';
+import type { ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { CryptidTheme } from '@/constants/cryptid-theme';
@@ -25,8 +26,11 @@ export interface MapRosterFriend {
 
 interface FriendsIslandProps {
   readonly friends: readonly MapRosterFriend[];
+  /** The bump pairing readout. The island being open is what arms it. */
+  readonly pairing?: ReactNode;
   readonly theme: CryptidTheme;
   onSelect(friendId: string): void;
+  onOpenProfile(friendId: string): void;
 }
 
 /** Tallest the roster grows before it scrolls — the map stays the hero. */
@@ -42,7 +46,13 @@ const MAX_LIST_HEIGHT = 268;
  * no "shared ground" bar here — the mock showed one, but the app has no overlap
  * metric yet and a fabricated number would break the one-honest-signal rule.
  */
-export function FriendsIsland({ friends, theme, onSelect }: FriendsIslandProps) {
+export function FriendsIsland({
+  friends,
+  pairing,
+  theme,
+  onSelect,
+  onOpenProfile,
+}: FriendsIslandProps) {
   const { chrome } = theme;
   const nearby = friends.filter((friend) => friend.online).length;
 
@@ -67,9 +77,12 @@ export function FriendsIsland({ friends, theme, onSelect }: FriendsIslandProps) 
         </View>
       </View>
 
+      {pairing}
+
       {friends.length === 0 ? (
         <Text style={[styles.empty, { color: chrome.steel }]}>
-          No cryptids in your atlas yet. Rub two phones together on the Friends tab to pair.
+          No cryptids in your atlas yet. Touch two phones together while this island is open on
+          both.
         </Text>
       ) : (
         <ScrollView
@@ -82,6 +95,7 @@ export function FriendsIsland({ friends, theme, onSelect }: FriendsIslandProps) 
               divider={index > 0}
               friend={friend}
               key={friend.id}
+              onOpenProfile={onOpenProfile}
               onSelect={onSelect}
               theme={theme}
             />
@@ -95,12 +109,14 @@ export function FriendsIsland({ friends, theme, onSelect }: FriendsIslandProps) 
 function FriendRow({
   divider,
   friend,
+  onOpenProfile,
   onSelect,
   theme,
 }: {
   readonly divider: boolean;
   readonly friend: MapRosterFriend;
   readonly theme: CryptidTheme;
+  onOpenProfile(friendId: string): void;
   onSelect(friendId: string): void;
 }) {
   const { chrome } = theme;
@@ -108,48 +124,64 @@ function FriendRow({
   const trailing = friend.online ? (distance ?? 'NO FIX') : 'OFFLINE';
 
   return (
-    <Pressable
-      accessibilityHint={
-        friend.locatable ? 'Centers the map on them and shows their trail' : undefined
-      }
-      accessibilityLabel={`${friend.handle}. ${trailing.toLowerCase()}. ${friend.status.toLowerCase()}.`}
-      accessibilityRole="button"
-      accessibilityState={{ disabled: !friend.locatable }}
-      disabled={!friend.locatable}
-      onPress={() => onSelect(friend.id)}
-      style={({ pressed }) => [
+    <View
+      style={[
         styles.row,
         divider && {
           borderTopColor: chrome.islandBorder,
           borderTopWidth: StyleSheet.hairlineWidth,
         },
-        { opacity: !friend.locatable ? 0.55 : pressed ? 0.58 : 1 },
       ]}
     >
-      <CryptidAvatar
-        art={friend.sigil || 'unknown'}
-        color={friend.color}
-        muted={!friend.online}
-        name={friend.cryptidName ?? 'Unknown form'}
-        style={styles.avatar}
-      />
-      <View style={styles.copy}>
-        <Text numberOfLines={1} style={[styles.handle, { color: friend.color }]}>
-          {friend.handle}
+      <Pressable
+        accessibilityHint={
+          friend.locatable ? 'Centers the map on them and shows their trail' : undefined
+        }
+        accessibilityLabel={`${friend.handle}. ${trailing.toLowerCase()}. ${friend.status.toLowerCase()}.`}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: !friend.locatable }}
+        disabled={!friend.locatable}
+        onPress={() => onSelect(friend.id)}
+        style={({ pressed }) => [
+          styles.rowMain,
+          { opacity: !friend.locatable ? 0.55 : pressed ? 0.58 : 1 },
+        ]}
+      >
+        <CryptidAvatar
+          art={friend.sigil || 'unknown'}
+          color={friend.color}
+          muted={!friend.online}
+          name={friend.cryptidName ?? 'Unknown form'}
+          style={styles.avatar}
+        />
+        <View style={styles.copy}>
+          <Text numberOfLines={1} style={[styles.handle, { color: friend.color }]}>
+            {friend.handle}
+          </Text>
+          <Text numberOfLines={1} style={[styles.status, { color: chrome.steel }]}>
+            {friend.status}
+          </Text>
+        </View>
+        <Text style={[styles.trailing, { color: friend.online ? chrome.ink : chrome.steel }]}>
+          {trailing}
         </Text>
-        <Text numberOfLines={1} style={[styles.status, { color: chrome.steel }]}>
-          {friend.status}
-        </Text>
-      </View>
-      <Text style={[styles.trailing, { color: friend.online ? chrome.ink : chrome.steel }]}>
-        {trailing}
-      </Text>
-      <SymbolView
-        name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-        size={15}
-        tintColor={chrome.steel}
-      />
-    </Pressable>
+      </Pressable>
+      {/* Two targets, two questions: the row asks "where are they", the chevron
+          asks "who are they". */}
+      <Pressable
+        accessibilityLabel={`Open ${friend.handle}'s profile`}
+        accessibilityRole="button"
+        hitSlop={8}
+        onPress={() => onOpenProfile(friend.id)}
+        style={({ pressed }) => [styles.chevron, { opacity: pressed ? 0.55 : 1 }]}
+      >
+        <SymbolView
+          name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
+          size={15}
+          tintColor={chrome.steel}
+        />
+      </Pressable>
+    </View>
   );
 }
 
@@ -216,9 +248,22 @@ const styles = StyleSheet.create({
   row: {
     alignItems: 'center',
     flexDirection: 'row',
+  },
+  rowMain: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
     gap: Spacing.three,
     minHeight: 64,
+    minWidth: 0,
     paddingVertical: Spacing.two,
+  },
+  chevron: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingLeft: Spacing.three,
+    width: 32,
   },
   avatar: {
     width: 72,

@@ -41,13 +41,22 @@ describe('FriendsIsland', () => {
     act(() => renderer?.unmount());
   });
 
-  function render(friends: readonly MapRosterFriend[], onSelect = jest.fn()) {
+  function render(
+    friends: readonly MapRosterFriend[],
+    onSelect = jest.fn(),
+    onOpenProfile = jest.fn()
+  ) {
     act(() => {
       renderer = create(
-        <FriendsIsland friends={friends} onSelect={onSelect} theme={CryptidThemes.daybreak} />
+        <FriendsIsland
+          friends={friends}
+          onOpenProfile={onOpenProfile}
+          onSelect={onSelect}
+          theme={CryptidThemes.daybreak}
+        />
       );
     });
-    return onSelect;
+    return { onSelect, onOpenProfile };
   }
 
   it('lists every friend and counts only the live ones as nearby', () => {
@@ -66,8 +75,24 @@ describe('FriendsIsland', () => {
     expect(findText(renderer, 'OFFLINE')).toHaveLength(1);
   });
 
+  it('renders the pairing readout the island arms', () => {
+    act(() => {
+      renderer = create(
+        <FriendsIsland
+          friends={[]}
+          onOpenProfile={jest.fn()}
+          onSelect={jest.fn()}
+          pairing={<Text>SEARCHING FOR A BUMP</Text>}
+          theme={CryptidThemes.daybreak}
+        />
+      );
+    });
+
+    expect(findText(renderer, 'SEARCHING FOR A BUMP')).toHaveLength(1);
+  });
+
   it('flies to a friend when their row is tapped', () => {
-    const onSelect = render([mothman, jackalope]);
+    const { onSelect } = render([mothman, jackalope]);
 
     const row = renderer.root.findByProps({
       accessibilityLabel: '@wanderer. 320 m. updated 4 min ago.',
@@ -77,7 +102,19 @@ describe('FriendsIsland', () => {
     expect(onSelect).toHaveBeenCalledWith('endpoint-mothman');
   });
 
-  it('disables rows with no fix to fly to', () => {
+  it('opens the profile from the chevron, not the row', () => {
+    const { onSelect, onOpenProfile } = render([mothman]);
+
+    const chevron = renderer.root.findByProps({
+      accessibilityLabel: "Open @wanderer's profile",
+    });
+    act(() => chevron.props.onPress());
+
+    expect(onOpenProfile).toHaveBeenCalledWith('endpoint-mothman');
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('keeps the profile reachable for friends with no fix to fly to', () => {
     render([jackalope]);
 
     const row = renderer.root.findByProps({
@@ -85,6 +122,11 @@ describe('FriendsIsland', () => {
     });
     expect(row.props.accessibilityState).toEqual({ disabled: true });
     expect(row.props.disabled).toBe(true);
+    // The chevron stays live: you can still read who they are.
+    const chevron = renderer.root.findByProps({
+      accessibilityLabel: "Open @nightowl's profile",
+    });
+    expect(chevron.props.disabled).toBeUndefined();
   });
 
   it('points an empty atlas at pairing instead of showing a bare list', () => {
@@ -94,7 +136,7 @@ describe('FriendsIsland', () => {
     expect(
       renderer.root
         .findAllByType(Text)
-        .some((node) => String(node.props.children).includes('Rub two phones together'))
+        .some((node) => String(node.props.children).includes('Touch two phones together'))
     ).toBe(true);
   });
 });
