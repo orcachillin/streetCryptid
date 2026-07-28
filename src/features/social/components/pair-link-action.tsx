@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, Share, StyleSheet, TextInput, View } from 'react-native';
+import { Platform, Pressable, Share, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -40,10 +40,13 @@ export function PairLinkAction({
     try {
       const link = await onCreateInvite();
       if (link) {
-        await Share.share({
-          message: `Find me on streetCryptid:\n${link}`,
-          url: link,
-        });
+        // iOS shares `message` and `url` as separate activity items, so a link
+        // embedded in the message would show up twice. Android ignores `url`.
+        await Share.share(
+          Platform.OS === 'ios'
+            ? { message: 'Find me on streetCryptid:', url: link }
+            : { message: `Find me on streetCryptid:\n${link}` }
+        );
       }
     } finally {
       setSharing(false);
