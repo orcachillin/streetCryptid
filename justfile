@@ -269,6 +269,8 @@ submit platform="android":
 
 # Build a production binary and auto-submit it (iOS→TestFlight, Android→Play internal track).
 # Example: `just release android` or `just release ios`.
+# CI does this for you on every push to main (see README "Automatic releases"); reach for this
+# only when you need an out-of-band build.
 release platform="android":
     bunx eas-cli build --platform {{platform}} --profile production --auto-submit
 
@@ -280,6 +282,22 @@ release-all:
 # Publish an over-the-air update. Example: `just update "fix crash"`.
 update message="update":
     bunx eas-cli update --auto --message "{{message}}"
+
+# --- Release automation ------------------------------------------------------
+
+# Print the version the next push to main would release, and why.
+# Needs the full history and tags: `git fetch --tags --unshallow` on a shallow clone.
+next-version:
+    bash scripts/next-version.sh
+
+# Write a version into app.json + package.json (what the release workflow commits).
+set-version version:
+    bash scripts/apply-version.sh {{version}}
+
+# Run the release pipeline's CI guards: EAS output isolation and version resolution.
+test-release:
+    bash scripts/test-eas-ci-log-isolation.sh
+    bash scripts/test-next-version.sh
 
 # --- Housekeeping ------------------------------------------------------------
 

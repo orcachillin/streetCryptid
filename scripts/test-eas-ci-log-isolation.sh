@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Guards the ways the PR build pipeline could leak secrets into the PUBLIC
-# Actions logs:
+# Guards the ways the PR build and release pipelines could leak secrets into the
+# PUBLIC Actions logs:
 #
 #   1. eas-local-build-ci.sh must never let EAS's signing-credential output
 #      reach stdout/stderr, on success or on any failure path.
@@ -10,6 +10,8 @@
 #      onward only via $GITHUB_OUTPUT (never a plain log line).
 #   3. notify-discord-thread.sh must never print the install URLs, the internal
 #      host, or the Discord webhook; it posts the links only into the thread.
+#   4. eas-local-release-ci.sh must withhold all `eas build`/`eas submit` output
+#      and emit only an allow-listed expo.dev submission URL.
 
 set -euo pipefail
 
@@ -32,6 +34,22 @@ if ! jq -e '
   ($android.android.buildType == "apk")
 ' "$repo_root/eas.json" >/dev/null; then
   echo "The PR build profiles must produce installable standalone Release apps." >&2
+  exit 1
+fi
+
+# The release workflow ships whatever the `production` profile produces, so it must stay a store
+# build: EAS-managed credentials, remotely auto-incremented build versions, and an .aab on Android
+# because Google Play rejects .apk uploads.
+if ! jq -e '
+  .cli.appVersionSource == "remote" and
+  (.build.production | (.autoIncrement == true) and
+    (.credentialsSource == "remote") and
+    (.distribution == null) and
+    (.android.buildType == null)) and
+  (.submit.production | (.ios.ascAppId | strings | length > 0) and
+    (.android.track | strings | length > 0))
+' "$repo_root/eas.json" >/dev/null; then
+  echo "The production build and submit profiles must be store-ready." >&2
   exit 1
 fi
 
@@ -93,6 +111,20 @@ if [[ "$command" == "build" ]]; then
     fi
     shift
   done
+  exit 0
+fi
+
+if [[ "$command" == "submit" ]]; then
+  printf 'credential on submit stdout: %s\n' "$FAKE_SIGNING_CREDENTIAL"
+  printf 'credential on submit stderr: %s\n' "$FAKE_SIGNING_CREDENTIAL" >&2
+  if [[ "${FAKE_EAS_FAIL_SUBMIT:-0}" == "1" ]]; then
+    exit 27
+  fi
+  if [[ "${FAKE_EAS_BAD_SUBMIT_URL:-0}" == "1" ]]; then
+    printf 'Submission details: https://evil.example.com/accounts/x/projects/y/submissions/12345678-1234-1234-1234-123456789abc\n'
+    exit 0
+  fi
+  printf 'Submission details: https://expo.dev/accounts/streetcryptid/projects/streetCryptid/submissions/abcdef01-2345-6789-abcd-ef0123456789\n'
   exit 0
 fi
 
@@ -349,4 +381,80 @@ if [[ "$(cat "$thread_out")" != "$new_thread" ]]; then
   exit 1
 fi
 
-echo "CI log isolation withheld signing credentials and masked the internal host, install URLs, and Discord webhook."
+release_output="$test_root/release-output"
+release_transcript="$(
+  PATH="$test_root/bin:$PATH" \
+    DEBUG=1 \
+    EAS_DEBUG=1 \
+    EXPO_DEBUG=1 \
+    EXPO_TOKEN=fake-token \
+    FAKE_SIGNING_CREDENTIAL="$sentinel" \
+    SC_WHAT_TO_TEST="release notes" \
+    GITHUB_OUTPUT="$release_output" \
+    RUNNER_TEMP="$test_root" \
+    bash "$repo_root/scripts/eas-local-release-ci.sh" \
+    ios production production "$test_root/release.ipa" \
+    2>&1
+)"
+
+if [[ "$release_transcript" == *"$sentinel"* ]]; then
+  echo "The signing credential sentinel escaped from the release submission." >&2
+  exit 1
+fi
+grep -Fxq \
+  'submission_url=https://expo.dev/accounts/streetcryptid/projects/streetCryptid/submissions/abcdef01-2345-6789-abcd-ef0123456789' \
+  "$release_output"
+
+submit_failure_output="$test_root/submit-failure-output"
+set +e
+submit_failure_transcript="$(
+  PATH="$test_root/bin:$PATH" \
+    EXPO_TOKEN=fake-token \
+    FAKE_SIGNING_CREDENTIAL="$sentinel" \
+    FAKE_EAS_FAIL_SUBMIT=1 \
+    GITHUB_OUTPUT="$submit_failure_output" \
+    RUNNER_TEMP="$test_root" \
+    bash "$repo_root/scripts/eas-local-release-ci.sh" \
+    android production production "$test_root/submit-failure.aab" \
+    2>&1
+)"
+submit_failure_status=$?
+set -e
+
+if [[ "$submit_failure_status" -eq 0 ]]; then
+  echo "The simulated failed EAS submission unexpectedly succeeded." >&2
+  exit 1
+fi
+if [[ "$submit_failure_transcript" == *"$sentinel"* ]]; then
+  echo "The signing credential sentinel escaped from failed submission output." >&2
+  exit 1
+fi
+if [[ "$submit_failure_transcript" != *"Expo output was withheld"* ]]; then
+  echo "The failed submission did not explain that private output was withheld." >&2
+  exit 1
+fi
+
+bad_submit_output="$test_root/bad-submit-output"
+: > "$bad_submit_output"
+bad_submit_transcript="$(
+  PATH="$test_root/bin:$PATH" \
+    EXPO_TOKEN=fake-token \
+    FAKE_SIGNING_CREDENTIAL="$sentinel" \
+    FAKE_EAS_BAD_SUBMIT_URL=1 \
+    GITHUB_OUTPUT="$bad_submit_output" \
+    RUNNER_TEMP="$test_root" \
+    bash "$repo_root/scripts/eas-local-release-ci.sh" \
+    android production production "$test_root/bad-submit.aab" \
+    2>&1
+)"
+
+if [[ "$bad_submit_transcript" == *"$sentinel"* ]]; then
+  echo "The signing credential sentinel escaped from an off-host submission URL." >&2
+  exit 1
+fi
+if grep -q 'submission_url=' "$bad_submit_output"; then
+  echo "A submission URL outside expo.dev reached the job output." >&2
+  exit 1
+fi
+
+echo "CI log isolation withheld signing credentials on the build and submit paths and masked the internal host, install URLs, and Discord webhook."
