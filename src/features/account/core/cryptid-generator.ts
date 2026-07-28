@@ -281,7 +281,7 @@ function describeProgress(
   phase: CryptidGenerationPhase,
   options: { detail?: string | null; ratio?: number | null; attempt?: number } = {}
 ): CryptidGenerationProgress {
-  const attempt = options.attempt && options.attempt > 1 ? options.attempt : 1;
+  const attempt = Math.max(1, options.attempt ?? 1);
   const detail = options.detail ?? PHASE_DETAILS[phase] ?? null;
   return {
     phase,
