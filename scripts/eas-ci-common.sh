@@ -32,9 +32,14 @@ eas_ci_require_token() {
   fi
 }
 
-eas_ci_require_runner_paths() {
-  : "${GITHUB_OUTPUT:?GITHUB_OUTPUT must be set}"
+eas_ci_require_runner_temp() {
   : "${RUNNER_TEMP:?RUNNER_TEMP must be set}"
+}
+
+# Only for wrappers that hand a value forward to a later step. The build wrapper deliberately
+# produces no output of its own: publishing is a separate script.
+eas_ci_require_output() {
+  : "${GITHUB_OUTPUT:?GITHUB_OUTPUT must be set}"
 }
 
 # App archives never leave runner.temp: they are not cached, not uploaded as workflow artifacts,

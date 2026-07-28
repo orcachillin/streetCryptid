@@ -31,7 +31,8 @@ if [[ -z "$build_profile" || -z "$submit_profile" || -z "$artifact" ]]; then
 fi
 
 eas_ci_require_token production-release
-eas_ci_require_runner_paths
+eas_ci_require_runner_temp
+eas_ci_require_output
 eas_ci_require_temp_artifact "$artifact"
 eas_ci_verify_access
 
