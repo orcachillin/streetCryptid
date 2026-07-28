@@ -19,6 +19,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const SHARE_SUBJECT = 'Find me on streetCryptid';
+
 export function PairLinkAction({
   pairing,
   accent,
@@ -40,12 +42,14 @@ export function PairLinkAction({
     try {
       const link = await onCreateInvite();
       if (link) {
-        // iOS shares `message` and `url` as separate activity items, so a link
-        // embedded in the message would show up twice. Android ignores `url`.
+        // The link must be the *only* shared text. iOS turns `message` and `url` into two
+        // separate activity items, and the Android sharesheet renders a link preview next to
+        // the text it is given, so any caption that also contains the link shows it twice.
+        // The prose rides along out-of-band instead: `subject` on iOS, EXTRA_SUBJECT (`title`)
+        // on Android.
         await Share.share(
-          Platform.OS === 'ios'
-            ? { message: 'Find me on streetCryptid:', url: link }
-            : { message: `Find me on streetCryptid:\n${link}` }
+          Platform.OS === 'ios' ? { url: link } : { message: link, title: SHARE_SUBJECT },
+          { subject: SHARE_SUBJECT, dialogTitle: SHARE_SUBJECT }
         );
       }
     } finally {
