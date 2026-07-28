@@ -130,6 +130,9 @@ jobs:
       - name: Test EAS CI log isolation
         run: bash scripts/test-eas-ci-log-isolation.sh
 
+      - name: Test release versioning
+        run: bash scripts/test-next-version.sh
+
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update

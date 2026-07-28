@@ -1,0 +1,430 @@
+name: Release
+
+# Every push to `main` that passes CI and carries a releasable commit cuts a version, builds both
+# store archives on GitHub-hosted runners with `eas build --local`, and hands them to EAS Submit
+# (iOS -> TestFlight, Android -> Google Play internal track). No EAS cloud build quota is used;
+# Expo only receives the finished archives and forwards them to the stores.
+
+on:
+  # Gated on CI rather than on `push` directly: a release that ships a commit whose tests are red is
+  # far more expensive to undo than one that ships a few minutes late. `workflow_run` also always
+  # runs the copy of this file on the default branch, so a release cannot be redefined from a
+  # feature branch.
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump to cut. `auto` follows the Conventional Commits since the last tag.
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+        default: auto
+
+permissions:
+  contents: read
+
+concurrency:
+  # Releases move a tag and a commit on main, so they must never overlap, and a queued release
+  # must not be thrown away.
+  group: release
+  cancel-in-progress: false
+
+env:
+  CI: '1'
+  EXPO_NO_TELEMETRY: '1'
+  EAS_CLI_VERSION: 21.0.3
+
+jobs:
+  version:
+    name: Resolve the release version
+    # A green CI run on a push to main is the only automatic trigger; a red or cancelled run, or a
+    # CI run for a pull request that merely targets main, must not ship anything.
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      release: ${{ steps.resolve.outputs.release }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      bump: ${{ steps.resolve.outputs.bump }}
+      sha: ${{ steps.publish.outputs.sha }}
+      what_to_test: ${{ steps.notes.outputs.what_to_test }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `workflow_run` checks out the default branch by default, but only by name; being
+          # explicit keeps the manual and automatic paths identical.
+          ref: main
+          # next-version.sh resolves the previous release from the tag graph.
+          fetch-depth: 0
+          # This job is the only one that writes to the repository. RELEASE_TOKEN is only needed
+          # when a branch protection rule refuses pushes authenticated with GITHUB_TOKEN.
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+          persist-credentials: true
+
+      - name: Check that main still points at the tested commit
+        id: gate
+        env:
+          # Empty for workflow_dispatch, which releases whatever main currently is.
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          subject="$(git log -1 --format=%s)"
+          proceed=true
+          reason=''
+          if [[ -n "$TESTED_SHA" && "$head_sha" != "$TESTED_SHA" ]]; then
+            proceed=false
+            reason="main moved to $head_sha after CI passed on $TESTED_SHA; the newer commit's own CI run will release it."
+          elif [[ "$subject" == 'chore(release):'* ]]; then
+            # Pushes made with GITHUB_TOKEN start no workflow runs at all, but a RELEASE_TOKEN push
+            # does; this stops the loop.
+            proceed=false
+            reason="HEAD is this workflow's own bump commit."
+          fi
+          printf 'proceed=%s\n' "$proceed" >> "$GITHUB_OUTPUT"
+          if [[ "$proceed" != "true" ]]; then
+            printf 'Skipping the release: %s\n' "$reason" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Resolve the next version
+        id: resolve
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          BUMP: ${{ inputs.bump || 'auto' }}
+        run: bash scripts/next-version.sh --force "$BUMP" >> "$GITHUB_OUTPUT"
+
+      - name: Report the decision
+        if: steps.gate.outputs.proceed == 'true'
+        env:
+          RELEASE: ${{ steps.resolve.outputs.release }}
+          BUMP: ${{ steps.resolve.outputs.bump }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.resolve.outputs.previous_tag }}
+        run: |
+          if [[ "$RELEASE" == "true" ]]; then
+            printf 'Releasing %s (%s) from %s.\n' "$TAG" "$BUMP" "${PREVIOUS_TAG:-the initial commit}"
+          else
+            printf 'Only housekeeping commits since %s; skipping the release.\n' "$PREVIOUS_TAG"
+          fi >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect the TestFlight release notes
+        id: notes
+        if: steps.resolve.outputs.release == 'true'
+        env:
+          PREVIOUS_TAG: ${{ steps.resolve.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+          delimiter="what-to-test-$RANDOM$RANDOM"
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            subjects="$(git log --no-merges --format='- %s' "$PREVIOUS_TAG..HEAD")"
+          else
+            subjects="$(git log --no-merges --format='- %s' --max-count=20 HEAD)"
+          fi
+          {
+            printf '%s<<%s\n' what_to_test "$delimiter"
+            # App Store Connect caps "What to Test", and a line equal to the delimiter would break
+            # out of the heredoc.
+            grep -v -x -F "$delimiter" <<<"$subjects" | cut -c 1-200 | head -c 3500
+            printf '\n%s\n' "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit and tag the release
+        id: publish
+        if: steps.resolve.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash scripts/apply-version.sh "$VERSION"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.json package.json
+          # The very first release ships the version already in app.json, so there is nothing to
+          # commit -- only to tag.
+          if git diff --cached --quiet; then
+            echo "app.json already declares $VERSION; tagging without a bump commit."
+          else
+            git commit --message "chore(release): $TAG"
+          fi
+          git tag --annotate "$TAG" --message "$TAG"
+          # The branch has to land before the tag: if someone pushed to main mid-run this fails
+          # here, leaving no dangling tag behind.
+          git push origin HEAD:main
+          git push origin "$TAG"
+          printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  release_ios:
+    name: Build and submit iOS to TestFlight
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 120
+    environment: production-release
+    permissions:
+      contents: read
+    outputs:
+      submission_url: ${{ steps.release.outputs.submission_url }}
+    env:
+      EAS_BUILD_GIT_COMMIT_HASH: ${{ needs.version.outputs.sha }}
+      EAS_LOCAL_BUILD_SKIP_CLEANUP: '0'
+      EXPO_NO_KEYCHAIN: '1'
+    steps:
+      - name: Require Expo token
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [[ -z "$EXPO_TOKEN" ]]; then
+            echo "The production-release environment is missing EXPO_TOKEN." >&2
+            exit 1
+          fi
+
+      - name: Configure isolated build paths
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          {
+            echo "BUILD_ARTIFACT=$RUNNER_TEMP/streetcryptid-$VERSION.ipa"
+            echo "EAS_LOCAL_BUILD_ARTIFACTS_DIR=$RUNNER_TEMP/eas-artifacts-ios"
+            echo "EAS_LOCAL_BUILD_WORKINGDIR=$RUNNER_TEMP/eas-local-build-ios"
+          } >> "$GITHUB_ENV"
+
+      - name: Check out the release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          persist-credentials: false
+
+      # Restore-only for the Bun and Cargo entries: cache-warm.yml owns those on main. This is the
+      # only workflow that runs `eas build --local` on main, so it is also the only one that can
+      # fill the pod download cache for every pull request to restore.
+      - name: Prepare the runner
+        id: setup
+        uses: ./.github/actions/eas-local-build-setup
+        with:
+          platform: ios
+          eas-cli-version: ${{ env.EAS_CLI_VERSION }}
+
+      - name: Verify EAS log isolation
+        run: bash scripts/test-eas-ci-log-isolation.sh
+
+      - name: Build locally and submit to App Store Connect
+        id: release
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          SC_WHAT_TO_TEST: ${{ needs.version.outputs.what_to_test }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$EAS_LOCAL_BUILD_ARTIFACTS_DIR" "$EAS_LOCAL_BUILD_WORKINGDIR"
+          bash scripts/eas-local-release-ci.sh \
+            ios \
+            production \
+            production \
+            "$BUILD_ARTIFACT"
+
+      - name: Save CocoaPods download cache
+        if: "!cancelled() && steps.setup.outputs.native-cache-hit != 'true'"
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/CocoaPods
+          key: ${{ steps.setup.outputs.native-cache-key }}
+
+      - name: Remove local build state
+        if: always()
+        run: |
+          set -euo pipefail
+          for path in \
+            "${EAS_LOCAL_BUILD_ARTIFACTS_DIR:-}" \
+            "${EAS_LOCAL_BUILD_WORKINGDIR:-}"; do
+            if [[ -z "$path" ]]; then
+              continue
+            fi
+            if [[ "$path" != "$RUNNER_TEMP/"* ]]; then
+              echo "Refusing to clean unexpected path: $path" >&2
+              exit 1
+            fi
+            if [[ -d "$path" ]]; then
+              find "$path" -depth -delete
+            fi
+          done
+          if [[ -n "${BUILD_ARTIFACT:-}" ]]; then
+            rm -f -- "$BUILD_ARTIFACT"
+          fi
+
+  release_android:
+    name: Build and submit Android to Google Play
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: production-release
+    permissions:
+      contents: read
+    outputs:
+      submission_url: ${{ steps.release.outputs.submission_url }}
+    env:
+      EAS_BUILD_GIT_COMMIT_HASH: ${{ needs.version.outputs.sha }}
+      EAS_LOCAL_BUILD_SKIP_CLEANUP: '0'
+    steps:
+      - name: Require Expo token
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [[ -z "$EXPO_TOKEN" ]]; then
+            echo "The production-release environment is missing EXPO_TOKEN." >&2
+            exit 1
+          fi
+
+      - name: Configure isolated build paths
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          {
+            echo "BUILD_ARTIFACT=$RUNNER_TEMP/streetcryptid-$VERSION.aab"
+            echo "EAS_LOCAL_BUILD_ARTIFACTS_DIR=$RUNNER_TEMP/eas-artifacts-android"
+            echo "EAS_LOCAL_BUILD_WORKINGDIR=$RUNNER_TEMP/eas-local-build-android"
+          } >> "$GITHUB_ENV"
+
+      - name: Check out the release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          persist-credentials: false
+
+      # Restore-only for the Bun and Cargo entries: cache-warm.yml owns those on main. This is the
+      # only workflow that runs `eas build --local` on main, so it is also the only one that can
+      # fill the Gradle dependency cache for every pull request to restore.
+      - name: Prepare the runner
+        id: setup
+        uses: ./.github/actions/eas-local-build-setup
+        with:
+          platform: android
+          eas-cli-version: ${{ env.EAS_CLI_VERSION }}
+
+      - name: Verify EAS log isolation
+        run: bash scripts/test-eas-ci-log-isolation.sh
+
+      - name: Build locally and submit to Google Play
+        id: release
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$EAS_LOCAL_BUILD_ARTIFACTS_DIR" "$EAS_LOCAL_BUILD_WORKINGDIR"
+          bash scripts/eas-local-release-ci.sh \
+            android \
+            production \
+            production \
+            "$BUILD_ARTIFACT"
+
+      - name: Save Gradle dependency cache
+        if: "!cancelled() && steps.setup.outputs.native-cache-hit != 'true'"
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/caches/jars-*
+            ~/.gradle/caches/transforms-*
+            ~/.gradle/wrapper
+          key: ${{ steps.setup.outputs.native-cache-key }}
+
+      - name: Remove local build state
+        if: always()
+        run: |
+          set -euo pipefail
+          for path in \
+            "${EAS_LOCAL_BUILD_ARTIFACTS_DIR:-}" \
+            "${EAS_LOCAL_BUILD_WORKINGDIR:-}"; do
+            if [[ -z "$path" ]]; then
+              continue
+            fi
+            if [[ "$path" != "$RUNNER_TEMP/"* ]]; then
+              echo "Refusing to clean unexpected path: $path" >&2
+              exit 1
+            fi
+            if [[ -d "$path" ]]; then
+              find "$path" -depth -delete
+            fi
+          done
+          if [[ -n "${BUILD_ARTIFACT:-}" ]]; then
+            rm -f -- "$BUILD_ARTIFACT"
+          fi
+
+  publish:
+    name: Publish the GitHub release
+    # The tag exists as soon as the version job pushes it, so the release notes are published even
+    # when one store submission fails; the summary records which half shipped.
+    if: always() && needs.version.outputs.release == 'true'
+    needs:
+      - version
+      - release_ios
+      - release_android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.version.outputs.tag }}
+      IOS_RESULT: ${{ needs.release_ios.result }}
+      IOS_URL: ${{ needs.release_ios.outputs.submission_url }}
+      ANDROID_RESULT: ${{ needs.release_android.result }}
+      ANDROID_URL: ${{ needs.release_android.outputs.submission_url }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Create the GitHub release
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --verify-tag \
+            --generate-notes
+
+      - name: Summarize the submissions
+        run: |
+          set -euo pipefail
+
+          platform_line() {
+            local platform="$1" store="$2" result="$3" url="$4"
+            if [[ "$result" != "success" ]]; then
+              printf -- '- **%s:** submission failed — [view GitHub Actions logs](%s)\n' "$platform" "$RUN_URL"
+            elif [[ -n "$url" ]]; then
+              printf -- '- **%s:** submitted to %s — [submission details](%s)\n' "$platform" "$store" "$url"
+            else
+              printf -- '- **%s:** submitted to %s\n' "$platform" "$store"
+            fi
+          }
+
+          {
+            printf '### %s\n\n' "$TAG"
+            platform_line "iOS" "TestFlight" "$IOS_RESULT" "$IOS_URL"
+            platform_line "Android" "the Google Play internal track" "$ANDROID_RESULT" "$ANDROID_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$IOS_RESULT" != "success" || "$ANDROID_RESULT" != "success" ]]; then
+            echo "At least one store submission failed." >&2
+            exit 1
+          fi

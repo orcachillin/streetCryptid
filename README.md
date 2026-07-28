@@ -141,6 +141,62 @@ just build         # cloud build (android / preview APK by default)
 Build profiles live in `eas.json`: `development` (dev client), `preview`
 (internal APK), and `production` (auto-incrementing store build).
 
+### Automatic releases
+
+Every push to `main` that passes CI runs `.github/workflows/release.yml`, which cuts a version,
+builds both store archives on GitHub-hosted runners, and submits them — iOS to TestFlight, Android
+to the Google Play internal track. Nothing is built on EAS infrastructure: the jobs run `eas build
+--local`, so no cloud build quota is consumed, and only the finished archive reaches Expo, where
+`eas submit --path` forwards it to the store.
+
+The release is gated on CI rather than triggered by the push itself: it starts from a successful
+`CI` workflow run and refuses to ship if `main` has moved on since that run, leaving the newer
+commit's own CI run to release it.
+
+The user-facing version is derived from the commits since the last `v*` tag, and
+`scripts/next-version.sh` decides the bump:
+
+| Commit range since the last tag                            | Result               |
+| ---------------------------------------------------------- | -------------------- |
+| `!` after the type, or a `BREAKING CHANGE:` footer         | major                |
+| a `feat:` commit                                           | minor                |
+| anything else that is not housekeeping                     | patch                |
+| only `docs`/`chore`/`ci`/`test`/`style`/`build`/`refactor` | no release, no build |
+
+Merge commits are ignored, so a merge subject alone never ships anything. Most of this
+repository's history is freeform prose, which is why an unrecognized subject earns a patch instead
+of being skipped. Run `just next-version` to see what the next push would do, or dispatch the
+workflow manually with a `patch`/`minor`/`major` override.
+
+The version job commits `chore(release): vX.Y.Z` to `main` (updating `app.json` and
+`package.json`), tags it, and the build jobs check that exact commit out, so a shipped binary
+always reports its own version. The workflow ignores its own `chore(release):` commits, so it
+cannot loop. `1.0.0` is the baseline: `app.json`, `package.json`, and the `v1.0.0` tag all agree,
+and everything increments from there. `ios.buildNumber` and `android.versionCode` are not in this
+repository at all — `cli.appVersionSource` is `remote`, so EAS increments them per build.
+
+A repository administrator must configure the `production-release` GitHub environment before the
+first release:
+
+1. Add `EXPO_TOKEN` as an environment secret. Do not add required reviewers unless you want every
+   release to block on a human.
+2. Upload the App Store Connect API key and the Google Play service account key to the project's
+   EAS credentials (`eas credentials`) — EAS Submit reads them from there, so no store credential
+   ever enters GitHub.
+3. Only if a branch protection rule rejects pushes authenticated with `GITHUB_TOKEN`, add a
+   `RELEASE_TOKEN` repository secret that is allowed to push the release commit and tag to `main`.
+
+If a submission fails, the version commit and tag still stand; fix the problem and the next push
+releases the following patch. To reship the same code, dispatch the workflow with an explicit
+bump.
+
+The release and PR build jobs prepare their runners through the same composite action,
+`.github/actions/eas-local-build-setup` (Node, Bun, the JavaScript and Cargo caches, the NDK or
+Xcode toolchain, the CocoaPods/Gradle caches, and the EAS CLI). Almost every one of those inputs
+lands in a cache key, so keeping them in one file is what stops the two workflows from silently
+drifting into permanent cache misses. `cache-warm.yml` uses the same action with
+`save-caches: 'true'`.
+
 ### PR standalone Release builds
 
 PRs authored by the allow-listed human accounts `Cobular`, `ava-ankenbrandt`, or `unrealJune` from
@@ -187,16 +243,19 @@ those caches without writing their own. Both sides go through
 `.github/actions/eas-rust-cache`, which owns `CARGO_TARGET_DIR` and `RUSTUP_TOOLCHAIN`: rust-cache
 hashes those variables and the `key` input into its _restore_ prefix, so any drift between the two
 workflows — or a source-file hash in the key — silently turns every restore into a miss. The
-CocoaPods and Gradle caches are the exception: only `eas build --local` fills them, so they stay
-PR-scoped and are saved even when a build fails late, which warms reruns of that same PR.
+CocoaPods and Gradle caches are the exception: only `eas build --local` fills them, and
+`release.yml` is the one workflow that runs it on `main`, so a release warms both for every pull
+request. PR runs still save their own entries — which warms reruns of that same PR — because a
+release only happens when something ships.
 
 EAS CLI serializes the local build job, including signing credentials, into a base64 child-process
 argument. Debug/error output can therefore be sensitive. The CI wrapper never forwards any
-`eas build` output to GitHub or disk, and it captures `eas upload` output only in memory. Failures
-emit only a fixed message. The wrapper removes GitHub command-file variables from the EAS
-subprocess environment and allow-lists the single Expo build-page URL written to the job output.
-CI exercises build success, build failure, and malformed upload output with a fake base64
-signing-key sentinel to ensure it cannot escape into command output.
+`eas build` output to GitHub or disk, and it captures `eas upload` and `eas submit` output only in
+memory. Failures emit only a fixed message. The wrapper removes GitHub command-file variables from
+the EAS subprocess environment and allow-lists the single Expo build-page or submission URL written
+to the job output. CI exercises build success, build failure, malformed upload output, submission
+failure, and an off-host submission URL with a fake base64 signing-key sentinel to ensure it cannot
+escape into command output.
 
 ## License
 
