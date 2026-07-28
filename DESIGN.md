@@ -146,9 +146,13 @@ Indigo/cyan field · **coral accent `#F0657F`** · **default friend green `#63D0
   because the lit tab below already names the view. _Shipped without the shared-ground bar:_
   the app has no overlap metric yet, and the declutter law says a fabricated number is worse
   than no number.
-- **Friend profile:** big cryptid hero, sharing state, retained 48-hour location timeline,
-  and a **"View trail on map"** CTA. It is reached from the chevron on a roster row — the
-  row itself asks "where are they", the chevron asks "who are they".
+- **Friend profile is also friend _management_:** big cryptid hero, sharing state, retained
+  48-hour location timeline, a **"View trail on map"** CTA, and **Remove friend** behind an
+  inline confirm. It is reached from a **filled `seg` circle with a "more" glyph** at the end
+  of a roster row — the row asks "where are they", that target asks "who are they, and what
+  do I want to do about it". It is deliberately _not_ a hairline chevron: as a chevron it read
+  as decoration and people concluded the app had no way to remove anyone. Removal is the one
+  destructive act in the product, so the door to it has to look like a door.
 - **Pairing lives in the FRIENDS tab, not on a screen.** Arming is one deliberate tap on
   ARM BUMP; after that, two phones touching is the whole gesture. Opening the tab used to
   arm the radio implicitly, which was wrong twice over: it fired an OS Bluetooth prompt

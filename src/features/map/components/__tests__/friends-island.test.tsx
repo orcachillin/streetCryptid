@@ -102,13 +102,13 @@ describe('FriendsIsland', () => {
     expect(onSelect).toHaveBeenCalledWith('endpoint-mothman');
   });
 
-  it('opens the profile from the chevron, not the row', () => {
+  it('opens friend management from its own target, not the row', () => {
     const { onSelect, onOpenProfile } = render([mothman]);
 
-    const chevron = renderer.root.findByProps({
-      accessibilityLabel: "Open @wanderer's profile",
+    const manage = renderer.root.findByProps({
+      accessibilityLabel: 'Manage @wanderer',
     });
-    act(() => chevron.props.onPress());
+    act(() => manage.props.onPress());
 
     expect(onOpenProfile).toHaveBeenCalledWith('endpoint-mothman');
     expect(onSelect).not.toHaveBeenCalled();
@@ -122,11 +122,11 @@ describe('FriendsIsland', () => {
     });
     expect(row.props.accessibilityState).toEqual({ disabled: true });
     expect(row.props.disabled).toBe(true);
-    // The chevron stays live: you can still read who they are.
-    const chevron = renderer.root.findByProps({
-      accessibilityLabel: "Open @nightowl's profile",
+    // Management stays live: removing a friend must not depend on their GPS.
+    const manage = renderer.root.findByProps({
+      accessibilityLabel: 'Manage @nightowl',
     });
-    expect(chevron.props.disabled).toBeUndefined();
+    expect(manage.props.disabled).toBeUndefined();
   });
 
   it('points an empty atlas at pairing instead of showing a bare list', () => {

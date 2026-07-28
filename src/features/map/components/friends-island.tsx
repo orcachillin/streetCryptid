@@ -162,19 +162,29 @@ function FriendRow({
           {trailing}
         </Text>
       </Pressable>
-      {/* Two targets, two questions: the row asks "where are they", the chevron
-          asks "who are they". */}
+      {/* Two targets, two questions: the row asks "where are they", this one
+          asks "who are they, and what do I want to do about it".
+
+          It is a filled target with a "more" glyph rather than a hairline
+          chevron because everything destructive or consequential lives behind
+          it — sharing, the retained trail, and removing the friend entirely.
+          As a faint chevron it read as decoration, and people concluded the app
+          had no way to remove anyone. */}
       <Pressable
-        accessibilityLabel={`Open ${friend.handle}'s profile`}
+        accessibilityHint="Profile, location sharing, trail and remove"
+        accessibilityLabel={`Manage ${friend.handle}`}
         accessibilityRole="button"
         hitSlop={8}
         onPress={() => onOpenProfile(friend.id)}
-        style={({ pressed }) => [styles.chevron, { opacity: pressed ? 0.55 : 1 }]}
+        style={({ pressed }) => [
+          styles.manage,
+          { backgroundColor: chrome.seg, opacity: pressed ? 0.55 : 1 },
+        ]}
       >
         <SymbolView
-          name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-          size={15}
-          tintColor={chrome.steel}
+          name={{ ios: 'ellipsis', android: 'more_horiz', web: 'more_horiz' }}
+          size={18}
+          tintColor={chrome.ink}
         />
       </Pressable>
     </View>
@@ -241,12 +251,13 @@ const styles = StyleSheet.create({
     minWidth: 0,
     paddingVertical: Spacing.two,
   },
-  chevron: {
+  manage: {
     alignItems: 'center',
+    borderRadius: 17,
+    height: 34,
     justifyContent: 'center',
-    minHeight: 44,
-    paddingLeft: Spacing.three,
-    width: 32,
+    marginLeft: Spacing.two,
+    width: 34,
   },
   avatar: {
     width: 72,
