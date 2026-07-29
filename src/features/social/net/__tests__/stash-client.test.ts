@@ -33,29 +33,16 @@ describe('HttpStashClient.registerNamespace', () => {
     expect(JSON.parse(init.body as string)).toEqual({ read_ticket: 'doc-ticket-xyz' });
   });
 
-  it('includes push token + platform together when both given', async () => {
+  // The privacy property the whole live-mode design rests on (ARCHITECTURE.md §10): a device
+  // push token is the one identifier here resolvable to a real person, and pairing it with a
+  // namespace let the stash operator work out which namespace was ours. Nothing may reintroduce
+  // it — not even as an optional field a caller could set.
+  it('never sends anything that identifies this device', async () => {
     const fetchMock = mockFetch(201);
-    await new HttpStashClient(CONFIG).registerNamespace({
-      readTicket: 'doc-ticket-xyz',
-      pushToken: 'tok',
-      platform: 'fcm',
-    });
-    expect(JSON.parse(lastCall(fetchMock).init.body as string)).toEqual({
-      read_ticket: 'doc-ticket-xyz',
-      push_token: 'tok',
-      platform: 'fcm',
-    });
-  });
-
-  it('omits a lone push token (server rejects partial pairs)', async () => {
-    const fetchMock = mockFetch(201);
-    await new HttpStashClient(CONFIG).registerNamespace({
-      readTicket: 'doc-ticket-xyz',
-      pushToken: 'tok',
-    });
-    expect(JSON.parse(lastCall(fetchMock).init.body as string)).toEqual({
-      read_ticket: 'doc-ticket-xyz',
-    });
+    await new HttpStashClient(CONFIG).registerNamespace({ readTicket: 'doc-ticket-xyz' });
+    const body = JSON.parse(lastCall(fetchMock).init.body as string) as Record<string, unknown>;
+    expect(body).toEqual({ read_ticket: 'doc-ticket-xyz' });
+    expect(Object.keys(body)).toEqual(['read_ticket']);
   });
 
   it('sends the PSK as a bearer when configured', async () => {
@@ -86,17 +73,6 @@ describe('HttpStashClient.registerNamespace', () => {
     await expect(
       new HttpStashClient(CONFIG).registerNamespace({ readTicket: 'x' })
     ).rejects.toThrow(/502/);
-  });
-});
-
-describe('HttpStashClient.unsubscribe', () => {
-  it('DELETEs the subscription and resolves on 204', async () => {
-    const fetchMock = mockFetch(204);
-    await new HttpStashClient(CONFIG).unsubscribe('abcd', { pushToken: 'tok', platform: 'apns' });
-    const { url, init } = lastCall(fetchMock);
-    expect(url).toBe('https://stash.example.com/v1/namespaces/abcd/subscription');
-    expect(init.method).toBe('DELETE');
-    expect(JSON.parse(init.body as string)).toEqual({ push_token: 'tok', platform: 'apns' });
   });
 });
 

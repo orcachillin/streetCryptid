@@ -135,6 +135,28 @@ Receives that arrived but could not be decrypted / were gated by the app:
 { name = "fix.received.app" && span.sc.drop_reason != "" }
 ```
 
+Live mode (ARCHITECTURE §9c) — a request's whole journey, and why one was refused:
+
+```traceql
+{ name = "live.request.sent" }
+{ name = "live.armed" }
+{ name = "live.cancelled" }
+{ name = "live.request.ignored" && span.sc.drop_reason != "" }
+```
+
+**Does gossip actually deliver phone-to-phone?** Live mode is only worth anything if a ~4s fix
+reaches the watcher over gossip rather than waiting for a stash reconciliation. Put two devices in
+the foreground, both sharing, and compare the counts — plus `gossip neighbor up` in Loki for how
+long after bind a neighbour appears:
+
+```traceql
+{ name = "gossip.publish" }
+{ name = "gossip.receive" }
+```
+
+If receives badly trail publishes, live fixes are arriving at stash-sync granularity and "live" is
+not live. Worth checking before building anything further on top of it.
+
 Logs (Grafana → Explore → Loki). iroh's relay / net_report / magicsock diagnostics from the
 phones land here — this is the network-state view when sync dies after a wifi↔cellular roam:
 
@@ -164,12 +186,14 @@ From any span, "Logs for this span" (trace→logs) jumps to that instance's logs
    `trail.push` in the same wake: absent means nothing pushed it, `finished=false` means the
    stash was unreachable. Hour-long gaps in a friend's trail with healthy `publish.fix` spans
    are the signature of a publish path that never pushes.
-5. **Did the stash see it?** `stash.entry.received` with the same hash; its `wake_targets` and
-   child `stash.wake.push` (with HTTP status) tell you whether device B was nudged.
-6. **Did device B wake and recover it?** `push.wake` (linked to the stash trace) →
-   `trail.sync.app` (`recovered` count) → `trail.backfill` log with the hash →
-   `fix.received.app` — where `sc.drop_reason=unknown-or-removing-author` is the last gate that
-   can silently eat a fix.
+5. **Did the stash see it?** `stash.entry.received` with the same hash. Note `wake_targets` will be
+   **0** and there will be no child `stash.wake.push`: the app no longer uploads a device push
+   token, so nothing is ever nudged (ARCHITECTURE §10). That is expected, not a fault.
+6. **Did device B recover it?** B pulls on its own schedule now — the periodic `bg.backfill`
+   (~15 min) or the 5-min live-request poll — rather than being woken. Follow
+   `trail.sync.app` (`recovered` count) → `trail.backfill` log with the hash → `fix.received.app`,
+   where `sc.drop_reason=unknown-or-removing-author` is the last gate that can silently eat a fix.
+   A gap of up to a backfill interval between steps 5 and 6 is now normal.
 
 ## Privacy posture
 

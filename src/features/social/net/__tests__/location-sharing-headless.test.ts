@@ -111,14 +111,7 @@ const friendB = {
 };
 
 function stashDeps() {
-  return {
-    stash: {
-      configured: true,
-      registerNamespace: async () => {},
-      unsubscribe: async () => {},
-    },
-    pushTokens: { acquire: async () => null, registerBackgroundSync: () => {} },
-  };
+  return { stash: { configured: true, registerNamespace: async () => {} } };
 }
 
 describe('LocationSharingService — headless init', () => {

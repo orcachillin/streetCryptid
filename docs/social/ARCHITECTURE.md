@@ -205,10 +205,14 @@ GPS (OS, fore+background) ─▶ LocationEngine ─▶ FixOutbox ─▶ Location
   died" rather than a slow-down that would encode the charge level in the cadence. There is
   deliberately **no distance filter and no deferred-updates batching**: both gate delivery on
   movement, which would re-open the leak at the platform layer. A bounded, on-demand **live mode**
-  (`SamplingInputs.live` → `LocationEngine.setLiveMode` → `LocationSharingService.setLiveTracking`,
-  default 2-min auto-revert) swaps in a real-time ~4s/high cadence for the "a friend is actively
-  watching" case. It is the one sanctioned exception, it _is_ visible on the wire as such, and it
-  must stay explicitly user-consented — never silently activated. Its network trigger is §9c.
+  (`SamplingInputs.live` → `LocationEngine.setLiveMode` → `LocationSharingService.setLiveTracking`)
+  swaps in a real-time ~4s/high cadence for the "a friend is actively watching" case. It is the one
+  sanctioned exception and it _is_ visible on the wire as such. Authorisation is **the sharing grant
+  itself**: a friend already in `sharingWith` can arm it with no prompt, no notification and no
+  per-friend toggle — the same as Life360 / Find My. That is deliberate. Sharing is an explicit grant
+  the user made on top of an SAS-verified bilateral pairing, and live mode discloses nothing new,
+  only the same stream more often. What bounds it is the TTL and the ability to stop at any moment,
+  not a confirmation dialog. Its network trigger is §9c.
 - **Confidence gate** (`fix-quality.ts`): Android's fused provider periodically reports fixes that
   are simply wrong — kilometre-radius tower/Wi-Fi trilateration when GPS has no sky, a cached fix
   replayed long after it was taken, or a lone sample that teleports and comes back. A fix is refused
@@ -282,7 +286,14 @@ GPS (OS, fore+background) ─▶ LocationEngine ─▶ FixOutbox ─▶ Location
   `expo-background-task` (iOS `BGTaskScheduler` / Android `WorkManager`, ~15 min, OS-scheduled)
   periodically wakes a short-lived headless node to drain any queued outbox and then `syncTrail`
   (bidirectional: one call both pushes what we just published and pulls what friends left at the
-  stash). Scheduled while background sharing is on; there is deliberately NO server push-wake.
+  stash). Scheduled while background sharing is on.
+- **There is no push-wake anywhere, by design.** The stash's control API still accepts a device
+  push token and the server can still send a silent `trail-sync` push, but the app **never uploads
+  one** (`stash-client.ts` sends a read-ticket and nothing else). See §10: an APNs/FCM token is the
+  only identifier in this system a third party can resolve to a real person, and registering it
+  against namespaces let the stash operator work out which namespace was ours. The cost is
+  accepted and real: a friend's fixes now land on our next poll or periodic backfill rather than
+  seconds after they publish. Live mode's request channel polls for the same reason (§9c).
 - **Config**: iOS `UIBackgroundModes: [location, processing]` + `NSLocationAlwaysAndWhenInUse…`; Android
   `ACCESS_BACKGROUND_LOCATION` + `FOREGROUND_SERVICE_LOCATION` + `POST_NOTIFICATIONS`
   (`app.json` / expo-location config plugin).
@@ -434,7 +445,62 @@ declined prompt left the strip with no action to offer.
 - Configure the app with `EXPO_PUBLIC_PAIR_MAILBOX_URL`. The service is replaceable through the
   `PairingMailbox` interface.
 
-## 9c. Later phases
+## 9c. Live mode: the request channel (implemented)
+
+Live mode (§9) needs a way for a watcher to ask. The obvious mechanism — a silent push through the
+stash, which already held device tokens — is **deliberately rejected**; see §10. Instead the request
+rides the durable trail the two devices already replicate, and the subject **polls** for it.
+
+```
+B (watcher)                                     A (subject)
+  build ControlMsg{kind: LiveRequest, ts, ttl, nonce}
+  seal for A only  ─────────────────────────────────────────────┐
+  docs_write_control → OWN namespace, key `ctl/hex(B)`          │  replicates B's namespace already
+  push_trail → stash  ─────────────────────────────────────────▶│
+                                                    every 5 min: syncTrail → read_control(B)
+                                                    evaluate: sharing? fresh? new nonce?
+                                                    → setLiveTracking(true, ttl)
+                                             A publishes at ~4s on its own topic; B is subscribed
+```
+
+- **No new transport, no new server surface.** A user is the sole writer of their own namespace, and
+  the recipient already replicates it, so a control entry needs no extra grant. The stash replicates
+  it blindly like any other entry.
+- **Key space** (`docs.rs`): control entries live at `ctl/hex(author)` — one slot per author,
+  latest-wins, so a cancel genuinely supersedes the request it withdraws and the replica never
+  accumulates a row per request. The `ctl/` lead means `author_prefix` range queries cannot reach
+  them and `decode_key` rejects them, so every fix reader skips them unchanged.
+- **Same envelope, different payload.** `crypto::seal` is reused as-is (it is payload-agnostic); the
+  payload is a postcard `ControlMsg` rather than a `LocationFix`. No envelope version bump, no
+  re-pairing. Wrapped for one recipient, so nobody else — including the stash — can tell a request
+  was sent, let alone to whom.
+- **Authorisation is `sharingWith`, and nothing more** (`live-requests.ts`). No prompt, no
+  notification, no per-friend toggle; see §9. A revoked friend can still write a request and it does
+  nothing.
+- **Replay defence is load-bearing.** Because the slot is overwritten in place, a replica can
+  withhold an update and keep serving an old entry — so a received message proves only "the author
+  wrote this at some point", never "the author wants this now". Receivers enforce a 10-min freshness
+  window, refuse a far-future `ts` (which would never go stale), and dedupe by `nonce`. The handled
+  nonces are **persisted**: without that, a restart would re-arm from the sender's still-current
+  entry. A `stale` or `not-sharing` verdict deliberately does NOT burn the nonce, so a later
+  legitimate re-send stays actionable.
+- **Latency is minutes, not seconds** (`LIVE_REQUEST_POLL_INTERVAL_MS`, 5 min). Fixed rather than
+  following the user's share interval: riding it would make requests 15-min-slow on the long cadence
+  and needlessly chatty on the short one, and it keeps this read traffic decoupled from the publish
+  cadence (a security property, §9). A constant-rate poll reveals nothing about movement. This is
+  what makes the feature "ask to watch", not "watch now" — the UI says so.
+- **Requires the stash.** `pushTrail` no-ops without one, and peer-only delivery needs both phones
+  online and reconciling simultaneously — the exact condition the stash exists to stop depending on.
+- **Polling runs only while background sharing is on**, since there is otherwise nothing to make
+  live. A request to someone with sharing off fails visibly rather than hanging.
+- **iOS**: `docsWriteControl` / `readControl` are absent until `just bindgen-ios` runs on macOS, so
+  both are optional on `IrohLocationApi` and guarded at every call site.
+
+Open risk: this all assumes the ~4s fixes actually reach the watcher once both phones are up. That
+is the gossip path, and the delivery story in `infra/otel/README.md` is stash-mediated — measure
+`gossip.receive` against `gossip.publish` on two live devices before trusting it.
+
+## 9d. Later phases
 
 - Operate authenticated relay and mailbox deployments outside the public app repository.
 - IndexedDB-backed docs/outbox persistence for production web parity.
@@ -454,6 +520,18 @@ declined prompt left the strip with no action to offer.
   cannot read fixes not wrapped for them.
 - **Mailbox operator:** sees random lookup ids, ciphertext sizes and request timing, but cannot
   decrypt an invite. Codes are one-time, rate-limited, and short-lived.
+- **Stash operator:** holds sealed envelopes it cannot decrypt, plus metadata — which namespaces
+  exist, when entries arrive, and their sizes. It sees a live session as a cadence change from the
+  ambient interval to ~4s, which §9 already treats as visible on the wire.
+  **Device push tokens are the sharp edge here, and we no longer upload them.** An APNs/FCM token is
+  the only identifier in this system a third party (Apple/Google) can resolve to a real person, and
+  it is subpoenable — so pairing one with a namespace is a join from real-world identity to a
+  location trail, worth more than the ciphertext. Worse, the old scheme leaked _which namespace was
+  yours_ even though we never registered a token against it: under bilateral pairing your token
+  appeared against every friend's namespace and never your own, so the operator recovered
+  `token → your namespace` by set complement. `stash-client.ts` now sends a read-ticket and nothing
+  else, and live mode polls instead of being woken (§9c). Rows uploaded by older app versions remain
+  server-side until purged; the server's push API is dead code the app never calls.
 - **Nearby attacker:** BLE proximity and motion are not trusted. Pairing messages remain bound to
   authenticated iroh endpoint identities, and friendship remains blocked on the mandatory mutual
   visual SAS check.

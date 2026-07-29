@@ -31,6 +31,16 @@ private func locationFix(from fix: [String: Double]) -> LocationFix {
     headingDeg: fix["headingDeg"] ?? 0, ts: UInt64(fix["ts"] ?? 0))
 }
 
+/// Build the UniFFI `ControlMsg` from the JS bridge dict (see `NativeControlMsg`; `nonce` is hex).
+private func controlMsg(from msg: [String: Any]) -> ControlMsg {
+  ControlMsg(
+    v: UInt8(truncatingIfNeeded: (msg["v"] as? NSNumber)?.intValue ?? 1),
+    kind: UInt8(truncatingIfNeeded: (msg["kind"] as? NSNumber)?.intValue ?? 0),
+    ts: UInt64((msg["ts"] as? NSNumber)?.doubleValue ?? 0),
+    ttlMs: UInt32((msg["ttlMs"] as? NSNumber)?.doubleValue ?? 0),
+    nonce: hexToData(msg["nonce"] as? String ?? ""))
+}
+
 // ── JS-facing conversions: byte arrays → lowercase hex, U64 → JS number ──────────────────────
 
 private func profileViewDict(_ p: ProfileView) -> [String: Any] {
@@ -376,6 +386,27 @@ public final class IrohLocationModule: Module {
         try await node.pushTrailTraced(peerTicket: peerTicket, traceparent: traceparent)
       } else {
         try await node.pushTrail(peerTicket: peerTicket)
+      }
+    }
+
+    // Live-mode request channel (ARCHITECTURE §9c). Same bindgen caveat as `pushTrail` above:
+    // needs `just bindgen-ios` on macOS before `node.docsWriteControl` / `node.readControl` exist
+    // in the generated Swift. The JS side guards on both exports, so an older binary degrades to
+    // "cannot send or receive live requests" rather than crashing.
+    AsyncFunction("docsWriteControl") { (msg: [String: Any], recipients: [String]) async throws in
+      guard let node = self.node else { throw Exception(name: "NoNode", description: "call createNode first") }
+      try await node.docsWriteControl(
+        msg: controlMsg(from: msg), recipients: recipients.map(hexToData))
+    }
+
+    AsyncFunction("readControl") { (author: String) async throws -> [[String: Any]] in
+      guard let node = self.node else { throw Exception(name: "NoNode", description: "call createNode first") }
+      let messages = try await node.readControl(author: hexToData(author))
+      return messages.map { msg in
+        [
+          "v": msg.v, "kind": msg.kind, "ts": msg.ts, "ttlMs": msg.ttlMs,
+          "nonce": dataToHex(msg.nonce),
+        ]
       }
     }
 

@@ -257,16 +257,8 @@ describe('LocationSharingService — durable trail wiring', () => {
       ticket: 'ticket-stash',
       psk: null,
     };
-    const stash = {
-      configured: true,
-      registerNamespace: async () => {},
-      unsubscribe: async () => {},
-    };
-    const pushTokens = {
-      acquire: async () => null,
-      registerBackgroundSync: () => {},
-    };
-    const svc = new LocationSharingService({ stash, pushTokens });
+    const stash = { configured: true, registerNamespace: async () => {} };
+    const svc = new LocationSharingService({ stash });
     await svc.init('@me', 'mothman');
     await svc.setStashOptIn(true);
 
@@ -299,15 +291,7 @@ describe('LocationSharingService — durable trail wiring', () => {
     });
     setTelemetryForTesting(telemetry);
     const svc = new LocationSharingService({
-      stash: {
-        configured: true,
-        registerNamespace: async () => {},
-        unsubscribe: async () => {},
-      },
-      pushTokens: {
-        acquire: async () => null,
-        registerBackgroundSync: () => {},
-      },
+      stash: { configured: true, registerNamespace: async () => {} },
     });
     await svc.init('@me', 'mothman');
     await svc.setStashOptIn(true);
