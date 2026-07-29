@@ -36,7 +36,11 @@ interface BetterHaptics {
   playTransientAsync(intensity: number, sharpness: number): Promise<void>;
   playContinuousAsync(intensity: number, sharpness: number, duration: number): Promise<void>;
   playPatternAsync(events: HapticEvent[]): Promise<void>;
-  createTransientEvent(options: { intensity?: number; sharpness?: number; time?: number }): HapticEvent;
+  createTransientEvent(options: {
+    intensity?: number;
+    sharpness?: number;
+    time?: number;
+  }): HapticEvent;
 }
 
 /**

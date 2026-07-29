@@ -19,7 +19,9 @@ const mockApi = {
   notificationAsync: jest.fn(async () => {}),
   playTransientAsync: jest.fn(async () => {}),
   playContinuousAsync: jest.fn(async () => {}),
-  playPatternAsync: jest.fn(async (_events: { time: number; parameters: { id: string | number; value: number }[] }[]) => {}),
+  playPatternAsync: jest.fn(
+    async (_events: { time: number; parameters: { id: string | number; value: number }[] }[]) => {}
+  ),
   createTransientEvent: jest.fn(
     (options: { intensity?: number; sharpness?: number; time?: number }) => ({
       type: 'transient',
@@ -100,8 +102,10 @@ describe('haptics service', () => {
     await toggleHaptic(true);
     await toggleHaptic(false);
 
-    const [onIntensity, onSharpness] = mockApi.playTransientAsync.mock.calls[0] as unknown as number[];
-    const [offIntensity, offSharpness] = mockApi.playTransientAsync.mock.calls[1] as unknown as number[];
+    const [onIntensity, onSharpness] = mockApi.playTransientAsync.mock
+      .calls[0] as unknown as number[];
+    const [offIntensity, offSharpness] = mockApi.playTransientAsync.mock
+      .calls[1] as unknown as number[];
     expect(onIntensity).toBeGreaterThan(offIntensity);
     expect(onSharpness).toBeGreaterThan(offSharpness);
   });
