@@ -31,6 +31,12 @@ export interface FixPublisher {
   publishFix(fix: LocationFix, parent?: SpanContext): Promise<number>;
   /** True once the node is bound and can publish. */
   isReady(): boolean;
+  /**
+   * Mirror what we just published to the durable stash. `publishFix` broadcasts live and writes the
+   * LOCAL docs replica only, so without this the batch reaches nobody who wasn't already online.
+   * Optional (and a no-op when the stash is off) so tests and web can leave it out.
+   */
+  pushTrail?(parent?: SpanContext): Promise<void>;
 }
 
 export type EngineStatus = 'idle' | 'running' | 'paused' | 'error';
@@ -145,6 +151,9 @@ export function createLocationEngine(opts: LocationEngineOptions): LocationEngin
         const seq = await publisher.publishFix(fix, drainParent);
         await trail.appendOwn(fix, seq);
       }, parent);
+      // Get the batch off the device. Cheap to repeat — the namespace is already in the docs sync
+      // engine after the first call, so this is one reconciliation round-trip with the stash.
+      if (n > 0) await publisher.pushTrail?.(parent);
       const pending = await outbox.pending();
       setState({ pending, error: null });
       return n;
