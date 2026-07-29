@@ -73,6 +73,8 @@ interface LocationSharingContextValue {
   setStashOptIn(optedIn: boolean): Promise<void>;
   /** Enable or disable one native endpoint transport. */
   setTransportEnabled(transport: keyof TransportPreferences, enabled: boolean): Promise<void>;
+  /** Change how often location is published. One of `SHARE_INTERVAL_OPTIONS_MS`. */
+  setShareInterval(intervalMs: number): Promise<void>;
   /** Capture and publish a fresh GPS fix immediately, bypassing normal sampling. */
   forceLocationPush(trigger?: 'manual' | 'scheduled'): Promise<number>;
   /** Honest, live diagnostic of every transport (for the Settings tab). */
@@ -466,6 +468,13 @@ export function LocationSharingProvider({ children }: PropsWithChildren) {
     },
     [run]
   );
+  const setShareInterval = useCallback(
+    (intervalMs: number) => {
+      setServiceError(null);
+      return run((service) => service.setShareInterval(intervalMs));
+    },
+    [run]
+  );
   const forceLocationPush = useCallback(async (trigger: 'manual' | 'scheduled' = 'manual') => {
     const service = serviceRef.current;
     if (!service) {
@@ -587,6 +596,7 @@ export function LocationSharingProvider({ children }: PropsWithChildren) {
       retryLocation,
       setStashOptIn,
       setTransportEnabled,
+      setShareInterval,
       forceLocationPush,
       transportReport,
       acknowledgeDiscoveredFriend,
@@ -618,6 +628,7 @@ export function LocationSharingProvider({ children }: PropsWithChildren) {
       retryLocation,
       setStashOptIn,
       setTransportEnabled,
+      setShareInterval,
       forceLocationPush,
       transportReport,
       acknowledgeDiscoveredFriend,
