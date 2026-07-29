@@ -158,8 +158,10 @@ describe('pairing pulse (hybrid stage ladder + proximity)', () => {
 
   // The spine: even at its most eager, a stage never overtakes the next one's calmest beat.
   it('keeps the stage ladder monotonic so the feel never reads as random', () => {
-    const fastest = (stage: Parameters<typeof pairingPulse>[0]) => pairingPulse(stage, -40)!.delayMs;
-    const slowest = (stage: Parameters<typeof pairingPulse>[0]) => pairingPulse(stage, -95)!.delayMs;
+    const fastest = (stage: Parameters<typeof pairingPulse>[0]) =>
+      pairingPulse(stage, -40)!.delayMs;
+    const slowest = (stage: Parameters<typeof pairingPulse>[0]) =>
+      pairingPulse(stage, -95)!.delayMs;
 
     expect(fastest('seeking')).toBeGreaterThanOrEqual(slowest('contact'));
     expect(fastest('contact')).toBeGreaterThanOrEqual(slowest('handshaking'));

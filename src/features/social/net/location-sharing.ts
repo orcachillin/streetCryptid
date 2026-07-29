@@ -68,14 +68,18 @@ import {
   createPersistentKV,
   createPersistentTrailStorage,
   loadPool,
+  loadShareIntervalMs,
   loadStashOptIn,
   loadTransportPreferences,
   savePool,
+  saveShareIntervalMs,
   saveStashOptIn,
   saveTransportPreferences,
+  SHARE_INTERVAL_OPTIONS_MS,
   type TransportPreferences,
   DEFAULT_TRANSPORT_PREFERENCES,
 } from './persistence';
+import { DEFAULT_SHARE_INTERVAL_MS } from './background/sampling-policy';
 import { createDefaultStashClient, type StashClient } from './stash-client';
 import {
   createDefaultPushTokenProvider,
@@ -188,6 +192,8 @@ export interface SharingSnapshot {
   };
   /** Native endpoint transports currently enabled for protocol-constrained debugging. */
   transports: TransportPreferences;
+  /** How often location is published, in ms. Constant by design; see `setShareInterval`. */
+  shareIntervalMs: number;
   /** Bilateral-pairing / nearby-discovery state. */
   pairing: PairingSnapshot;
 }
@@ -334,6 +340,14 @@ export class LocationSharingService implements FixPublisher {
   private bgCadenceStop: (() => Promise<void>) | null = null;
   /** Auto-revert timer for a bounded live-tracking window; null when ambient. */
   private liveTrackingTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Drives {@link LocationEngine.heartbeat} at the sampling interval. This is what keeps the
+   * cadence constant while the user is stationary: with no movement the OS may deliver no fixes at
+   * all, and without a heartbeat the envelopes would simply stop — making silence mean "not moving".
+   */
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** The user's chosen publish cadence; see `loadShareIntervalMs`. */
+  private shareIntervalMs: number = DEFAULT_SHARE_INTERVAL_MS;
   private backgroundSharing = false;
   private backgroundAccess: BackgroundAccess = 'unknown';
   private latestLocalFix: LocationFix | null = null;
@@ -559,6 +573,9 @@ export class LocationSharingService implements FixPublisher {
 
     await this.restorePool(interactive);
     this.stashOptIn = await loadStashOptIn(this.kv);
+    // Hydrated here as well as in startBackground so settings shows the real value even before
+    // background sharing has been switched on.
+    this.shareIntervalMs = await loadShareIntervalMs(this.kv);
     if (interactive) {
       await this.importFriendProfiles();
       if (this.stashEnabled()) this.registerStashBackgroundSync();
@@ -1403,7 +1420,10 @@ export class LocationSharingService implements FixPublisher {
       ]);
 
       const battery = createBatterySource();
-      const policy = createSamplingPolicy();
+      // Launch on the user's grid, not the default — otherwise a phone restarting at 15 min would
+      // publish at 5 min until they next opened settings.
+      this.shareIntervalMs = await loadShareIntervalMs(this.kv);
+      const policy = createSamplingPolicy({ intervalMs: this.shareIntervalMs });
       this.engine = createLocationEngine({
         publisher: this,
         outbox: backgroundOutbox,
@@ -1415,8 +1435,7 @@ export class LocationSharingService implements FixPublisher {
       });
       await this.engine.start();
       this.bgTaskHandlerStop = registerActiveBackgroundFixHandler(async (fix, parent) => {
-        this.recordLocalFix(fix);
-        await this.engine?.ingest(fix, parent);
+        await this.ingestAndTrackLocal(fix, parent);
       });
 
       // Route the periodic RECEIVE-side backfill (WorkManager / BGTaskScheduler) to THIS live
@@ -1428,6 +1447,10 @@ export class LocationSharingService implements FixPublisher {
       // stash, so flushing after it would leave everything this wake published stranded until the
       // next OS wake (~15 min at best, and iOS may skip many).
       this.bgBackfillHandlerStop = registerActiveBackfillHandler(async (parent) => {
+        // Heartbeat first: this OS wake may be the only chance a stationary phone gets to fill the
+        // slots that elapsed while it was frozen, and the fills have to be in the outbox before the
+        // drain below or they wait for the next wake.
+        await this.engine?.heartbeat(parent);
         await this.engine?.flush(parent);
         await this.syncTrail(0, parent);
       });
@@ -1438,11 +1461,12 @@ export class LocationSharingService implements FixPublisher {
         body: "Keeping your friends' map current.",
         color: '#C6791A',
       };
-      // Arm the OS from a *real* battery read (motion is unknown until fixes flow), so a phone that
-      // launches in Low-Power Mode starts backed off rather than at full cadence.
-      const initialDecision = policy.decide({ motion: 'unknown', battery: await battery.read() });
+      // Arm the OS from a *real* battery read, so a phone launching in Low-Power Mode starts at the
+      // conserving accuracy tier instead of arming high and being re-armed on the first power event.
+      // (The cadence is identical either way — battery never moves it.)
+      const initialDecision = policy.decide({ battery: await battery.read() });
       const initialCfg = {
-        ...cfgFromDecision(initialDecision, 'unknown', notification),
+        ...cfgFromDecision(initialDecision, notification),
         ...config,
       };
       const permissions = await this.bgProvider.startBackground(initialCfg);
@@ -1462,12 +1486,17 @@ export class LocationSharingService implements FixPublisher {
       }).start();
 
       const firstFix = await this.bgProvider.getCurrent();
-      this.recordLocalFix(firstFix);
-      await this.engine.ingest(firstFix);
+      await this.ingestAndTrackLocal(firstFix);
       this.bgUnwatch = await this.bgProvider.watch((fix) => {
-        this.recordLocalFix(fix);
-        void this.engine?.ingest(fix);
+        void this.ingestAndTrackLocal(fix);
       });
+
+      // Emit on every slot boundary even when the OS delivers no fixes (a phone sitting on a desk).
+      // Cheap: it republishes a position we already have and no-ops when the slot is covered.
+      this.heartbeatTimer = setInterval(() => {
+        void this.engine?.heartbeat();
+      }, this.shareIntervalMs);
+      (this.heartbeatTimer as unknown as { unref?: () => void }).unref?.();
 
       this.bgLifecycleStop = createAppLifecycleController({
         onForeground: () => {
@@ -1503,11 +1532,41 @@ export class LocationSharingService implements FixPublisher {
     }
   }
 
+  /**
+   * Change how often location is published. Read the current value from
+   * {@link SharingSnapshot.shareIntervalMs}. Persists the choice, re-grids the engine's slot
+   * boundaries, and re-arms the OS (via the cadence controller, which sees the changed interval on
+   * the engine's next state emission). Safe to call before the background service is running — the
+   * value is stored and picked up by {@link startBackground}.
+   *
+   * Values outside `SHARE_INTERVAL_OPTIONS_MS` are ignored: off-grid intervals would break the
+   * wall-clock slot alignment the uniform cadence depends on.
+   */
+  async setShareInterval(intervalMs: number): Promise<void> {
+    if (!SHARE_INTERVAL_OPTIONS_MS.some((option) => option === intervalMs)) return;
+    if (intervalMs === this.shareIntervalMs) return;
+    this.shareIntervalMs = intervalMs;
+    await saveShareIntervalMs(this.kv, intervalMs);
+    await this.engine?.setIntervalMs(intervalMs);
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = setInterval(() => {
+        void this.engine?.heartbeat();
+      }, intervalMs);
+      (this.heartbeatTimer as unknown as { unref?: () => void }).unref?.();
+    }
+    this.emit();
+  }
+
   /** Stop the background location service (leaves queued fixes in the outbox). Idempotent. */
   async stopBackground(): Promise<void> {
     if (this.liveTrackingTimer) {
       clearTimeout(this.liveTrackingTimer);
       this.liveTrackingTimer = null;
+    }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
     }
     const stopCadence = this.bgCadenceStop;
     this.bgCadenceStop = null;
@@ -1588,6 +1647,10 @@ export class LocationSharingService implements FixPublisher {
     if (this.liveTrackingTimer) {
       clearTimeout(this.liveTrackingTimer);
       this.liveTrackingTimer = null;
+    }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
     }
     this.bgUnwatch?.();
     this.bgUnwatch = null;
@@ -1798,6 +1861,21 @@ export class LocationSharingService implements FixPublisher {
     this.fixListeners.forEach((l) => l(fix));
   }
 
+  /**
+   * Feed a raw provider fix to the engine, then move the local own-position dot to whatever the
+   * engine actually *accepted*.
+   *
+   * The dot deliberately follows the engine rather than the raw fix: the confidence gate exists
+   * because Android sometimes reports a position kilometres away, and rendering that before
+   * discarding it would throw the user's own marker across town for a frame. On rejection this
+   * re-affirms the last good position instead.
+   */
+  private async ingestAndTrackLocal(fix: LocationFix, parent?: SpanContext): Promise<void> {
+    await this.engine?.ingest(fix, parent);
+    const accepted = this.engine?.getState().lastAcceptedFix ?? null;
+    if (accepted && accepted !== this.latestLocalFix) this.recordLocalFix(accepted);
+  }
+
   private recordLocalFix(fix: LocationFix): void {
     if (this.latestLocalFix && fix.ts < this.latestLocalFix.ts) return;
     this.latestLocalFix = fix;
@@ -1853,6 +1931,7 @@ export class LocationSharingService implements FixPublisher {
         error: this.transportDiagnosticsError,
       },
       transports: this.transportState(),
+      shareIntervalMs: this.shareIntervalMs,
       pairing: this.pairingSnapshot(),
     };
   }
