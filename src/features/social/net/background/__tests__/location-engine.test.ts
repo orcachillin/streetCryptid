@@ -1,4 +1,5 @@
 import type { LocationFix } from '../../../core/types';
+import { DEFAULT_FIX_QUALITY_CONFIG } from '../fix-quality';
 import type { FixOutbox } from '../fix-outbox';
 import {
   createLocationEngine,
@@ -13,8 +14,21 @@ import type { BatteryState } from '../types';
 /** The default cadence, and therefore the width of one publish slot in these tests. */
 const SLOT = 300_000;
 
+const BASE_LAT = 40;
+const M_PER_DEG_LAT = 6_371_000 * (Math.PI / 180);
+
 function fix(ts: number, overrides: Partial<LocationFix> = {}): LocationFix {
-  return { lat: 40, lon: -73, accuracyM: 5, headingDeg: 0, ts, ...overrides };
+  return { lat: BASE_LAT, lon: -73, accuracyM: 5, headingDeg: 0, ts, ...overrides };
+}
+
+/** Latitude `metres` north of the base — coordinates have to be plausible now that the gate runs. */
+function latNorth(metres: number): number {
+  return BASE_LAT + metres / M_PER_DEG_LAT;
+}
+
+/** A fix `metres` north of the base at `ts`. */
+function north(ts: number, metres: number): LocationFix {
+  return fix(ts, { lat: latNorth(metres) });
 }
 
 /** Inline in-memory FixOutbox — decoupled from the real createFixOutbox. */
@@ -205,7 +219,11 @@ describe('location engine', () => {
 
   it('re-reads battery on reevaluate() without a new fix', async () => {
     let batt: BatteryState = { level: 1, charging: false, lowPower: false };
-    const { clock, engine } = harness({ battery: async () => batt });
+    const { clock, engine } = harness({
+      battery: async () => batt,
+      // Distinct tiers so the re-read is observable; the shipped defaults use one tier throughout.
+      policy: createSamplingPolicy({ normalAccuracy: 'balanced', lowBatteryAccuracy: 'low' }),
+    });
     await engine.start();
 
     clock.t = 0;
@@ -263,19 +281,19 @@ describe('location engine', () => {
       expect(publisher.published).toHaveLength(1);
     });
 
-    it('publishes the newest fix seen in the slot, not the first', async () => {
+    it('absorbs further fixes in an already-published slot until the next boundary', async () => {
       const { publisher, clock, engine } = harness({ ready: true });
       await engine.start();
 
       clock.t = 0;
-      await engine.ingest(fix(0, { lat: 40 }));
+      await engine.ingest(fix(0));
       clock.t = 10_000;
-      await engine.ingest(fix(10_000, { lat: 41 }));
+      await engine.ingest(north(10_000, 20));
       clock.t = SLOT;
-      await engine.ingest(fix(SLOT, { lat: 42 }));
+      await engine.ingest(north(SLOT, 40));
 
-      // Slot 0 published the position we knew when it closed; slot 1 the fresh one.
-      expect(publisher.published.map((f) => f.lat)).toEqual([40, 42]);
+      // The middle fix never goes out on its own; slot 1 carries the latest position instead.
+      expect(publisher.published.map((f) => f.lat)).toEqual([BASE_LAT, latNorth(40)]);
     });
 
     it('emits one envelope per slot at a steady rate regardless of fix rate', async () => {
@@ -305,6 +323,111 @@ describe('location engine', () => {
       // Mid-slot start: a user who just enabled sharing should not wait for the next boundary.
       clock.t = SLOT * 7 + 123_456;
       await engine.ingest(fix(clock.t));
+
+      expect(publisher.published).toHaveLength(1);
+    });
+  });
+
+  // Android's fused provider periodically reports a position kilometres away. The gate keeps it out
+  // of the trail — without letting its absence become a signal in itself.
+  describe('confidence gate', () => {
+    /** A fix coarse enough to fail the accuracy test. */
+    const junk = (ts: number): LocationFix => fix(ts, { accuracyM: 3_000 });
+
+    it('does not publish a junk fix', async () => {
+      const { publisher, clock, engine } = harness({ ready: true });
+      await engine.start();
+
+      clock.t = 0;
+      await engine.ingest(fix(0));
+      clock.t = SLOT;
+      await engine.ingest(junk(SLOT));
+
+      expect(publisher.published.map((f) => f.accuracyM)).toEqual([5, 5]);
+    });
+
+    // THE property. If a rejected fix silenced its slot, then "no envelope" would mean "bad GPS"
+    // — indoors, a basement, the Underground — which is the same class of inference the fixed
+    // cadence exists to prevent.
+    it('keeps the cadence exactly as if the fix had been good', async () => {
+      const good = harness({ ready: true });
+      const bad = harness({ ready: true });
+      await good.engine.start();
+      await bad.engine.start();
+
+      for (const slot of [0, 1, 2, 3]) {
+        good.clock.t = slot * SLOT;
+        bad.clock.t = slot * SLOT;
+        await good.engine.ingest(north(slot * SLOT, slot * 50));
+        await bad.engine.ingest(slot === 0 ? fix(0) : junk(slot * SLOT));
+      }
+
+      expect(bad.publisher.published).toHaveLength(good.publisher.published.length);
+    });
+
+    it('republishes the last good position while GPS is bad', async () => {
+      const { publisher, clock, engine } = harness({ ready: true });
+      await engine.start();
+
+      clock.t = 0;
+      await engine.ingest(fix(0));
+      clock.t = SLOT;
+      await engine.ingest(junk(SLOT));
+
+      expect(publisher.published[1]).toEqual(fix(0));
+    });
+
+    it('holds the local dot at the last accepted position', async () => {
+      const { clock, engine } = harness({ ready: true });
+      await engine.start();
+
+      clock.t = 0;
+      const original = fix(0);
+      await engine.ingest(original);
+      clock.t = SLOT;
+      await engine.ingest(junk(SLOT));
+
+      // What the map's own-position marker follows — a rejected fix must not throw it across town.
+      expect(engine.getState().lastAcceptedFix).toEqual(original);
+      expect(engine.getState().lastRejection).toBe('inaccurate');
+    });
+
+    it('publishes nothing at all until a first fix passes', async () => {
+      const { publisher, clock, engine } = harness({ ready: true });
+      await engine.start();
+
+      clock.t = 0;
+      await engine.ingest(junk(0));
+      clock.t = SLOT;
+      await engine.heartbeat();
+
+      // Nothing to republish yet: better absent than confidently wrong on the very first ping.
+      expect(publisher.published).toHaveLength(0);
+    });
+
+    it('gives up being fussy once nothing has passed for long enough', async () => {
+      const { publisher, clock, engine } = harness({ ready: true });
+      await engine.start(); // arms the escape hatch at t=0
+
+      clock.t = 60_000;
+      await engine.ingest(junk(clock.t));
+      expect(publisher.published).toHaveLength(0);
+
+      // A coarse position beats a trail that never starts.
+      clock.t = DEFAULT_FIX_QUALITY_CONFIG.acceptAnythingAfterMs;
+      await engine.ingest(junk(clock.t));
+      expect(publisher.published).toHaveLength(1);
+    });
+
+    it('does not let junk through in live mode either', async () => {
+      const { publisher, clock, engine } = harness({ ready: true });
+      await engine.start();
+      clock.t = 0;
+      await engine.ingest(fix(0));
+      await engine.setLiveMode(true);
+
+      clock.t = 4_000;
+      await engine.ingest(junk(4_000));
 
       expect(publisher.published).toHaveLength(1);
     });

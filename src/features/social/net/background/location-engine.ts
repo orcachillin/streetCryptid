@@ -1,5 +1,11 @@
 import { getTelemetry, type SpanContext } from '@/features/dev/telemetry';
 import type { LocationFix } from '../../core/types';
+import {
+  assessFix,
+  DEFAULT_FIX_QUALITY_CONFIG,
+  type FixQualityConfig,
+  type FixRejection,
+} from './fix-quality';
 import type { FixOutbox } from './fix-outbox';
 import type { SamplingPolicy } from './sampling-policy';
 import type { TrailStore } from './trail-store';
@@ -10,7 +16,8 @@ import type { BatteryState, SamplingDecision } from './types';
  *
  *   fix (foreground watch OR background task)
  *     → policy.decide  (accuracy / suspend)
- *     → remember as lastKnownFix
+ *     → assessFix      (confidence gate)
+ *     → if accepted: remember as lastKnownFix
  *     → for each whole interval slot that has elapsed: outbox.enqueue
  *     → if publisher.isReady: flush → for each: publisher.publishFix(fix) → trail.appendOwn(fix, seq)
  *
@@ -30,6 +37,10 @@ import type { BatteryState, SamplingDecision } from './types';
  *
  * The engine takes only the minimal slice of {@link FixPublisher} it needs, so it can be unit-tested
  * with a fake publisher + ManualLocationProvider + in-memory outbox/trail + a fake clock — no native.
+ *
+ * The confidence gate (`fix-quality.ts`) sits *before* `lastKnownFix`, never before the publish: a
+ * junk fix is refused the right to become our position, but the slot it landed in still goes out
+ * carrying the last good one. Rejection must not read as silence — see that module's header.
  */
 
 /**
@@ -63,8 +74,16 @@ export type EngineStatus = 'idle' | 'running' | 'paused' | 'error';
 
 export interface EngineState {
   status: EngineStatus;
-  /** ms epoch of the last fix we ingested, or null. */
+  /** ms epoch of the last fix that passed the confidence gate, or null. */
   lastFixAt: number | null;
+  /**
+   * The last fix that passed the confidence gate — our current position as far as the app is
+   * concerned. The map's own-position dot should follow this rather than raw provider output, or a
+   * rejected fix still visibly throws the user's own marker across town.
+   */
+  lastAcceptedFix: LocationFix | null;
+  /** Why the most recent fix was refused, or null if it was accepted. Diagnostics only. */
+  lastRejection: FixRejection | null;
   /** Last sampling decision applied (so the UI/provider can reflect cadence). */
   decision: SamplingDecision | null;
   /** Fixes waiting in the outbox. */
@@ -79,6 +98,8 @@ export interface LocationEngineOptions {
   policy: SamplingPolicy;
   /** Reads current battery; the policy backs off when low. Default: full battery, not low-power. */
   battery?: () => Promise<BatteryState>;
+  /** Confidence-gate thresholds, merged over {@link DEFAULT_FIX_QUALITY_CONFIG}. */
+  quality?: Partial<FixQualityConfig>;
   /** Injectable clock. Default `Date.now`. */
   now?: () => number;
 }
@@ -113,16 +134,16 @@ export interface LocationEngine {
    */
   setIntervalMs(intervalMs: number): Promise<SamplingDecision>;
   /**
-   * Recompute the sampling decision from the last known motion and a *fresh* battery read, without
-   * ingesting a new fix. Call this on a power event (Low Power Mode toggled, charger un/plugged) so
-   * cadence backs off/tightens immediately instead of waiting for the next GPS fix. Emits state so a
-   * cadence controller can re-program the OS. No-op enqueue: it never publishes.
+   * Recompute the sampling decision from a *fresh* battery read, without ingesting a new fix. Call
+   * this on a power event (Low Power Mode toggled, charger un/plugged) so the accuracy tier follows
+   * immediately instead of waiting for the next GPS fix. Emits state so a cadence controller can
+   * re-program the OS. No-op enqueue: it never publishes, and it never moves the cadence.
    */
   reevaluate(): Promise<SamplingDecision>;
   /**
    * Turn real-time live tracking on/off (a friend is actively watching). While on, the policy uses
-   * its real-time `live*` cadence regardless of motion. Recomputes + emits immediately so the
-   * cadence controller re-programs the OS; returns the new decision.
+   * its real-time `live*` cadence and fixes publish per-arrival rather than per-slot. Recomputes +
+   * emits immediately so the cadence controller re-programs the OS; returns the new decision.
    */
   setLiveMode(on: boolean): Promise<SamplingDecision>;
   /** Drain the outbox through the publisher (call on resume / node-ready / connectivity regained). */
@@ -136,19 +157,27 @@ const DEFAULT_BATTERY: BatteryState = { level: 1, charging: false, lowPower: fal
 export function createLocationEngine(opts: LocationEngineOptions): LocationEngine {
   const { publisher, outbox, trail, policy } = opts;
   const battery = opts.battery ?? (async (): Promise<BatteryState> => ({ ...DEFAULT_BATTERY }));
+  const quality: FixQualityConfig = { ...DEFAULT_FIX_QUALITY_CONFIG, ...opts.quality };
   const now = opts.now ?? Date.now;
 
   let state: EngineState = {
     status: 'idle',
     lastFixAt: null,
+    lastAcceptedFix: null,
+    lastRejection: null,
     decision: null,
     pending: 0,
     error: null,
   };
 
-  /** Latest position we know of, republished as a heartbeat for slots that produce no fix. */
+  /**
+   * Latest position that passed the confidence gate, republished as a heartbeat for slots that
+   * produce no fix — and for slots whose only fixes were rejected.
+   */
   let lastKnownFix: LocationFix | null = null;
   let lastFixAt: number | null = null;
+  /** When we last accepted a fix; seeded at `start()` so the starvation escape hatch can arm. */
+  let lastAcceptedAt: number | null = null;
   /** Index of the last wall-clock slot we put an envelope on the wire for; null before the first. */
   let lastPublishedSlot: number | null = null;
   let live = false;
@@ -249,6 +278,9 @@ export function createLocationEngine(opts: LocationEngineOptions): LocationEngin
   return {
     async start(): Promise<void> {
       if (state.status === 'running') return;
+      // Arm the starvation escape hatch from now, so a phone that only ever sees coarse fixes
+      // starts publishing something within `acceptAnythingAfterMs` instead of never.
+      lastAcceptedAt ??= now();
       setState({ status: 'running', error: null });
     },
 
@@ -259,13 +291,21 @@ export function createLocationEngine(opts: LocationEngineOptions): LocationEngin
     async ingest(fix: LocationFix, parent?: SpanContext): Promise<SamplingDecision> {
       const batt = await battery();
       const decision = policy.decide({ battery: batt, live });
+      const rejection = assessFix(
+        fix,
+        { lastAccepted: lastKnownFix, lastAcceptedAt, now: now() },
+        quality
+      );
 
-      // The slot gate is the FIRST place a captured fix stops travelling; the span says whether it
-      // was published, absorbed into an already-covered slot, or suspended outright.
+      // The gate and the slot boundary are the two places a captured fix stops travelling; the span
+      // says which — refused as junk, absorbed into an already-covered slot, or suspended outright.
       const span = getTelemetry().startSpan('engine.ingest', {
         parent,
         attributes: {
           live,
+          'fix.accuracy_m': fix.accuracyM,
+          'fix.age_ms': now() - fix.ts,
+          'fix.rejection': rejection ?? 'none',
           'battery.level': Math.round(batt.level * 100) / 100,
           'battery.charging': batt.charging,
           'battery.low_power': batt.lowPower,
@@ -276,32 +316,47 @@ export function createLocationEngine(opts: LocationEngineOptions): LocationEngin
         },
       });
 
-      lastKnownFix = fix;
-      lastFixAt = now();
+      // A rejected fix never becomes our position — but it also never stops the clock. Execution
+      // falls through to the slot logic below, which republishes the last accepted position, so a
+      // stretch of bad GPS is indistinguishable on the wire from a stretch of sitting still.
+      if (rejection === null) {
+        lastKnownFix = fix;
+        lastFixAt = now();
+        lastAcceptedAt = now();
+      }
 
       try {
         if (state.status !== 'running') {
           span.setAttribute('sc.drop_reason', 'engine-not-running');
-          setState({ decision, lastFixAt });
+          setState({
+            decision,
+            lastFixAt,
+            lastAcceptedFix: lastKnownFix,
+            lastRejection: rejection,
+          });
           return decision;
         }
 
-        setState({ decision, lastFixAt });
+        setState({ decision, lastFixAt, lastAcceptedFix: lastKnownFix, lastRejection: rejection });
 
         try {
           if (!decision.active) {
             span.setAttribute('sc.drop_reason', 'sampling-suspended');
           } else if (live) {
             // Real-time mode bypasses the slot grid by design: the user has explicitly traded the
-            // uniform cadence for responsiveness, for a bounded window.
-            await outbox.enqueue(fix, span.context);
+            // uniform cadence for responsiveness, for a bounded window. It does NOT bypass the
+            // confidence gate — a friend watching in real time least of all wants junk.
+            if (rejection === null) await outbox.enqueue(fix, span.context);
           } else {
             const published = await enqueueDueSlots(span.context);
             span.setAttribute('slots_published', published);
-            // Absorbed, not lost: this fix updated lastKnownFix and will go out on the next slot
+            // Absorbed, not lost: an accepted fix updated lastKnownFix and goes out on the next slot
             // boundary. Stamped so it is distinguishable from a real drop.
             if (published === 0) span.setAttribute('sc.drop_reason', 'slot-already-published');
           }
+          // Last word: why this particular fix went nowhere is more useful than the slot state,
+          // which is the ordinary case and says nothing about the fix itself.
+          if (rejection !== null) span.setAttribute('sc.drop_reason', `fix-${rejection}`);
           if (publisher.isReady()) await flush(span.context);
           const pending = await outbox.pending();
           span.setAttribute('pending', pending);

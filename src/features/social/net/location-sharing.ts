@@ -1435,8 +1435,7 @@ export class LocationSharingService implements FixPublisher {
       });
       await this.engine.start();
       this.bgTaskHandlerStop = registerActiveBackgroundFixHandler(async (fix, parent) => {
-        this.recordLocalFix(fix);
-        await this.engine?.ingest(fix, parent);
+        await this.ingestAndTrackLocal(fix, parent);
       });
 
       // Route the periodic RECEIVE-side backfill (WorkManager / BGTaskScheduler) to THIS live
@@ -1487,11 +1486,9 @@ export class LocationSharingService implements FixPublisher {
       }).start();
 
       const firstFix = await this.bgProvider.getCurrent();
-      this.recordLocalFix(firstFix);
-      await this.engine.ingest(firstFix);
+      await this.ingestAndTrackLocal(firstFix);
       this.bgUnwatch = await this.bgProvider.watch((fix) => {
-        this.recordLocalFix(fix);
-        void this.engine?.ingest(fix);
+        void this.ingestAndTrackLocal(fix);
       });
 
       // Emit on every slot boundary even when the OS delivers no fixes (a phone sitting on a desk).
@@ -1862,6 +1859,21 @@ export class LocationSharingService implements FixPublisher {
       .then(() => this.notifyTrailChanged())
       .catch((error: unknown) => this.reportError(error));
     this.fixListeners.forEach((l) => l(fix));
+  }
+
+  /**
+   * Feed a raw provider fix to the engine, then move the local own-position dot to whatever the
+   * engine actually *accepted*.
+   *
+   * The dot deliberately follows the engine rather than the raw fix: the confidence gate exists
+   * because Android sometimes reports a position kilometres away, and rendering that before
+   * discarding it would throw the user's own marker across town for a frame. On rejection this
+   * re-affirms the last good position instead.
+   */
+  private async ingestAndTrackLocal(fix: LocationFix, parent?: SpanContext): Promise<void> {
+    await this.engine?.ingest(fix, parent);
+    const accepted = this.engine?.getState().lastAcceptedFix ?? null;
+    if (accepted && accepted !== this.latestLocalFix) this.recordLocalFix(accepted);
   }
 
   private recordLocalFix(fix: LocationFix): void {

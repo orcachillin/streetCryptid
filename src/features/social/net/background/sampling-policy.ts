@@ -50,7 +50,11 @@ export const DEFAULT_SAMPLING_CONFIG: SamplingConfig = {
   intervalMs: DEFAULT_SHARE_INTERVAL_MS,
   lowBatteryThreshold: 0.2,
   normalAccuracy: 'balanced',
-  lowBatteryAccuracy: 'low',
+  // Not `low`. That tier is nominally accurate to the kilometre, which is both useless on a friend
+  // map and coarse enough that the confidence gate (`fix-quality.ts`, 150 m) would reject what it
+  // produced — we would burn battery sampling fixes we then threw away, and a low battery would
+  // manifest as the trail quietly freezing. Neither tier may be coarser than `maxAccuracyM`.
+  lowBatteryAccuracy: 'balanced',
   suspendBelowLevel: 0.05,
   liveIntervalMs: 4_000,
   liveDistanceM: 5,

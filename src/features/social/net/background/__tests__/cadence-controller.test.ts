@@ -12,7 +12,10 @@ import { createSamplingPolicy } from '../sampling-policy';
 import type { BatteryState } from '../types';
 
 const NOTIF: CadenceNotification = { title: 'streetCryptid', body: 'body', color: '#C6791A' };
-const policy = createSamplingPolicy();
+// Tiers set explicitly so a battery change is observable here. The shipped defaults deliberately
+// use the same tier for both (nothing coarser than the confidence gate accepts), which would make
+// these tests assert nothing about the controller's re-arm logic.
+const policy = createSamplingPolicy({ normalAccuracy: 'balanced', lowBatteryAccuracy: 'low' });
 const fullBattery: BatteryState = { level: 1, charging: false, lowPower: false };
 const lowBattery: BatteryState = { level: 0.1, charging: false, lowPower: false };
 
@@ -25,6 +28,8 @@ function stateFor(battery: BatteryState, intervalMs?: number): EngineState {
   return {
     status: 'running',
     lastFixAt: 0,
+    lastAcceptedFix: null,
+    lastRejection: null,
     decision: policy.decide({ battery }),
     pending: 0,
     error: null,

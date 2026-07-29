@@ -1,5 +1,6 @@
+import { DEFAULT_FIX_QUALITY_CONFIG } from '../fix-quality';
 import { createSamplingPolicy, DEFAULT_SAMPLING_CONFIG } from '../sampling-policy';
-import type { BatteryState } from '../types';
+import type { AccuracyTier, BatteryState } from '../types';
 
 const healthy: BatteryState = { level: 0.9, charging: false, lowPower: false };
 const low: BatteryState = { level: 0.1, charging: false, lowPower: false };
@@ -41,21 +42,37 @@ describe('createSamplingPolicy', () => {
     }
   });
 
-  it('degrades accuracy — not cadence — on a low battery', () => {
-    const policy = createSamplingPolicy();
-    expect(policy.decide({ battery: healthy }).accuracy).toBe('balanced');
-    expect(policy.decide({ battery: low }).accuracy).toBe('low');
+  it('answers a low battery with accuracy, never with cadence', () => {
+    // Configured explicitly: the shipped tiers are equal (see the default-config test below), so
+    // this exercises the mechanism rather than today's values.
+    const policy = createSamplingPolicy({
+      normalAccuracy: 'high',
+      lowBatteryAccuracy: 'balanced',
+    });
+    expect(policy.decide({ battery: healthy }).accuracy).toBe('high');
+    expect(policy.decide({ battery: low }).accuracy).toBe('balanced');
     expect(policy.decide({ battery: low }).timeIntervalMs).toBe(
       policy.decide({ battery: healthy }).timeIntervalMs
     );
   });
 
   it('treats Low-Power Mode like a low battery', () => {
-    expect(createSamplingPolicy().decide({ battery: lowPower }).accuracy).toBe('low');
+    const policy = createSamplingPolicy({ lowBatteryAccuracy: 'low' });
+    expect(policy.decide({ battery: lowPower }).accuracy).toBe('low');
   });
 
   it('charging cancels the low-battery penalty entirely', () => {
-    expect(createSamplingPolicy().decide({ battery: charging }).accuracy).toBe('balanced');
+    const policy = createSamplingPolicy({ lowBatteryAccuracy: 'low' });
+    expect(policy.decide({ battery: charging }).accuracy).toBe('balanced');
+  });
+
+  // Requesting a tier coarser than the confidence gate accepts would burn battery on fixes we then
+  // throw away, and a low battery would show up as the trail quietly freezing.
+  it('never requests a tier coarser than the confidence gate accepts', () => {
+    const usable: AccuracyTier[] = ['balanced', 'high', 'highest'];
+    expect(usable).toContain(DEFAULT_SAMPLING_CONFIG.normalAccuracy);
+    expect(usable).toContain(DEFAULT_SAMPLING_CONFIG.lowBatteryAccuracy);
+    expect(DEFAULT_FIX_QUALITY_CONFIG.maxAccuracyM).toBeGreaterThanOrEqual(100);
   });
 
   it('suspends outright when critically low and not charging', () => {

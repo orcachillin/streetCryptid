@@ -209,6 +209,19 @@ GPS (OS, fore+background) ─▶ LocationEngine ─▶ FixOutbox ─▶ Location
   default 2-min auto-revert) swaps in a real-time ~4s/high cadence for the "a friend is actively
   watching" case. It is the one sanctioned exception, it _is_ visible on the wire as such, and it
   must stay explicitly user-consented — never silently activated. Its network trigger is §9c.
+- **Confidence gate** (`fix-quality.ts`): Android's fused provider periodically reports fixes that
+  are simply wrong — kilometre-radius tower/Wi-Fi trilateration when GPS has no sky, a cached fix
+  replayed long after it was taken, or a lone sample that teleports and comes back. A fix is refused
+  if it is coarser than `maxAccuracyM` (150 m), older than `maxAgeMs` (10 min), or implies a ground
+  speed over `maxSpeedMps` (100 m/s) since the last accepted one — the last discounted by the two
+  fixes' combined error radii, so a stationary phone's jitter is not mistaken for a teleport. After
+  `acceptAnythingAfterMs` (15 min) with nothing accepted it takes what it can get, because a coarse
+  position beats a frozen trail. **A rejected fix must never silence a slot**: the gate sits before
+  `lastKnownFix`, never before the publish, so a stretch of bad GPS looks exactly like a stretch of
+  sitting still on the wire. Were it otherwise, "no envelope" would mean "this person is indoors /
+  underground", which is the same class of inference the fixed cadence exists to prevent. The
+  requested accuracy tier must never be coarser than `maxAccuracyM`, or we would spend battery on
+  fixes we then discard — which is why `lowBatteryAccuracy` is `balanced` and not `low`.
 - **Slot quantisation** (`location-engine.ts`): the engine publishes on wall-clock boundaries of
   `intervalMs`, not on fix arrival. Extra fixes within a slot are absorbed into `lastKnownFix`; a
   slot that produces no fix re-publishes `lastKnownFix` **verbatim, original `ts` intact**, so
