@@ -6,6 +6,7 @@ import {
 
 import { recordEventLog } from '@/features/dev/telemetry';
 import { DEFAULT_SIGNAL_COLOR, normalizeAsciiArt, validateCryptidProfileFields } from './profile';
+import { repairCryptidName, repairSigil, sigilHasEnoughInk } from './sigil-repair';
 
 const MAX_DESCRIPTION_LENGTH = 160;
 const MAX_NATIVE_SEED = 2_147_483_647;
@@ -18,6 +19,8 @@ export interface GeneratedCryptid {
   source: CryptidGenerationSource;
   /** Set when the system model was skipped or failed and the offline maker took over. */
   fallbackReason?: string;
+  /** What had to be cleaned up before the model's art fit the tile. Empty when it arrived clean. */
+  repairs?: readonly string[];
 }
 
 interface LocalArchetype {
@@ -175,12 +178,33 @@ function generatedName(description: string, archetype: LocalArchetype, hash: num
   return `${prefix} ${pick(archetype.nouns, hash, 16)}`;
 }
 
+/**
+ * Repairs the model's output, then checks it against the profile grid.
+ *
+ * Repair runs only for `system` output: the offline maker's art is authored, already fits, and
+ * should be passed through byte for byte. Anything the system model produced is best effort, so
+ * it gets cleaned up first and is only rejected when there is no drawing left to salvage.
+ */
 export function validateGeneratedCryptid(
   value: NativeGeneratedCryptid,
   source: CryptidGenerationSource
 ): GeneratedCryptid {
-  const name = value.name.trim();
-  const sigil = normalizeAsciiArt(value.sigil);
+  const repairedName = source === 'system' ? repairCryptidName(value.name) : null;
+  const repairedSigil = source === 'system' ? repairSigil(value.sigil) : null;
+  const name = repairedName?.name ?? value.name.trim();
+  const sigil = repairedSigil?.sigil ?? normalizeAsciiArt(value.sigil);
+  const repairs = [...(repairedName?.repairs ?? []), ...(repairedSigil?.repairs ?? [])];
+
+  // Checked before the grid rules so a drawing that repaired down to nothing explains itself,
+  // rather than telling the user to "choose a profile icon" as the reason the model failed.
+  const salvageIssues: string[] = [];
+  if (source === 'system') {
+    if (name.length === 0) salvageIssues.push('The model did not name the cryptid.');
+    if (!sigilHasEnoughInk(sigil)) {
+      salvageIssues.push('The drawing was mostly characters that cannot be shown.');
+    }
+  }
+
   const issues = validateCryptidProfileFields({
     handle: 'generator',
     cryptidName: name,
@@ -188,7 +212,8 @@ export function validateGeneratedCryptid(
     color: DEFAULT_SIGNAL_COLOR,
     presetId: null,
   });
-  const generationIssues = [...issues.cryptidName, ...issues.sigil];
+  const generationIssues =
+    salvageIssues.length > 0 ? salvageIssues : [...issues.cryptidName, ...issues.sigil];
   if (generationIssues.length > 0) {
     throw new Error(
       `The on-device generator made an icon that does not fit the profile grid. ${generationIssues.join(
@@ -196,7 +221,7 @@ export function validateGeneratedCryptid(
       )}`
     );
   }
-  return { name, sigil, source };
+  return repairs.length > 0 ? { name, sigil, source, repairs } : { name, sigil, source };
 }
 
 export function generateLocalCryptid(
@@ -408,7 +433,11 @@ export async function generateCryptid(
       action: 'generator.result',
       summary: `System model drew "${validated.name}"`,
       status: 'ok',
-      details: { source: 'system', elapsed_ms: Date.now() - startedAt },
+      details: {
+        source: 'system',
+        repairs: validated.repairs ?? [],
+        elapsed_ms: Date.now() - startedAt,
+      },
     });
     report(describeProgress('done'));
     return validated;

@@ -131,6 +131,13 @@ deps-check:
 deps-fix:
     bunx expo install --fix
 
+# --- Native module: cryptid-generator (Kotlin + Swift) -----------------------
+
+# Test the on-device icon generator's Kotlin output parser (JVM unit tests).
+# Not part of `check-all`: needs the Android SDK and a generated android/ (run `just prebuild`).
+test-android:
+    cd android && ./gradlew :cryptid-generator:testDebugUnitTest
+
 # --- Native module: iroh-location (Rust + WASM) ------------------------------
 
 # Test the Rust crate: crypto envelope + durable-trail (iroh-docs) logic. Portable; runs anywhere.
