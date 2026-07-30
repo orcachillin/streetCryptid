@@ -231,6 +231,26 @@ import { PairingMailboxNotFoundError, type PairingMailbox } from '../pairing-mai
 import { LocationSharingService, type SharingSnapshot } from '../location-sharing';
 /* eslint-enable import/first */
 
+/**
+ * A service started here owns a 4s pairing poll (and, once sharing is on, a live-request poll).
+ * Jest tears the module registry down between test files but leaves the process — and its real
+ * timers — alive, so a service left running fires into a dead registry and crashes an unrelated
+ * suite. Every service a test starts gets shut down with it.
+ */
+const running: LocationSharingService[] = [];
+
+function makeService(
+  ...args: ConstructorParameters<typeof LocationSharingService>
+): LocationSharingService {
+  const svc = new LocationSharingService(...args);
+  running.push(svc);
+  return svc;
+}
+
+afterEach(async () => {
+  await Promise.all(running.splice(0).map((svc) => svc.shutdownAsync()));
+});
+
 function pairResult(overrides: Partial<PairResult> & { sessionId: string }): PairResult {
   return {
     peerEndpointId: 'peer1',
@@ -276,7 +296,7 @@ class FakeMailbox implements PairingMailbox {
 
 const services: LocationSharingService[] = [];
 function newService(mailbox?: PairingMailbox): LocationSharingService {
-  const svc = new LocationSharingService(mailbox ? { mailbox } : {});
+  const svc = makeService(mailbox ? { mailbox } : {});
   services.push(svc);
   return svc;
 }
@@ -400,7 +420,7 @@ describe('LocationSharingService — encrypted short pairing-code path', () => {
     expect(mockHolder.mod.calls.initiatePairByToken).toHaveLength(0);
   });
 
-  it('defaults to an unconfigured mailbox when none is injected (new LocationSharingService() keeps working)', async () => {
+  it('defaults to an unconfigured mailbox when none is injected (makeService() keeps working)', async () => {
     const originalEnv = process.env.EXPO_PUBLIC_PAIR_MAILBOX_URL;
     delete process.env.EXPO_PUBLIC_PAIR_MAILBOX_URL;
     try {

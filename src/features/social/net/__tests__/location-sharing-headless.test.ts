@@ -93,6 +93,26 @@ jest.mock('../persistence', () => ({
 // eslint-disable-next-line import/first
 import { LocationSharingService } from '../location-sharing';
 
+/**
+ * A service started here owns a 4s pairing poll (and, once sharing is on, a live-request poll).
+ * Jest tears the module registry down between test files but leaves the process — and its real
+ * timers — alive, so a service left running fires into a dead registry and crashes an unrelated
+ * suite. Every service a test starts gets shut down with it.
+ */
+const running: LocationSharingService[] = [];
+
+function makeService(
+  ...args: ConstructorParameters<typeof LocationSharingService>
+): LocationSharingService {
+  const svc = new LocationSharingService(...args);
+  running.push(svc);
+  return svc;
+}
+
+afterEach(async () => {
+  await Promise.all(running.splice(0).map((svc) => svc.shutdownAsync()));
+});
+
 const friendA = {
   endpointId: 'bb22',
   handle: '@bee',
@@ -126,7 +146,7 @@ describe('LocationSharingService — headless init', () => {
   });
 
   it('re-opens every friend trail namespace so a background backfill has something to reconcile', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
 
     await svc.init('@me', 'mothman', '', '', { mode: 'headless' });
 
@@ -134,7 +154,7 @@ describe('LocationSharingService — headless init', () => {
   });
 
   it('still skips gossip subscriptions in headless mode (nothing is listening)', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
 
     await svc.init('@me', 'mothman', '', '', { mode: 'headless' });
 
@@ -144,7 +164,7 @@ describe('LocationSharingService — headless init', () => {
   it('pushes the durable trail to the opted-in stash', async () => {
     mockHolder.stashConfig = { baseUrl: 'https://stash.test', ticket: 'ticket-stash', psk: null };
     mockHolder.stashOptIn = true;
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman', '', '', { mode: 'headless' });
 
     await svc.pushTrail();
@@ -155,7 +175,7 @@ describe('LocationSharingService — headless init', () => {
   it('does not push when the stash is configured but not opted into', async () => {
     mockHolder.stashConfig = { baseUrl: 'https://stash.test', ticket: 'ticket-stash', psk: null };
     mockHolder.stashOptIn = false;
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman', '', '', { mode: 'headless' });
 
     await svc.pushTrail();
@@ -167,7 +187,7 @@ describe('LocationSharingService — headless init', () => {
     mockHolder.stashConfig = { baseUrl: 'https://stash.test', ticket: 'ticket-stash', psk: null };
     mockHolder.stashOptIn = true;
     delete (mockHolder.mod as Partial<FakeNativeModule>).pushTrail;
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman', '', '', { mode: 'headless' });
 
     await expect(svc.pushTrail()).resolves.toBeUndefined();

@@ -107,6 +107,26 @@ jest.mock('expo-secure-store', () => ({
 // eslint-disable-next-line import/first
 import { LocationSharingService, type SharingSnapshot } from '../location-sharing';
 
+/**
+ * A service started here owns a 4s pairing poll (and, once sharing is on, a live-request poll).
+ * Jest tears the module registry down between test files but leaves the process — and its real
+ * timers — alive, so a service left running fires into a dead registry and crashes an unrelated
+ * suite. Every service a test starts gets shut down with it.
+ */
+const running: LocationSharingService[] = [];
+
+function makeService(
+  ...args: ConstructorParameters<typeof LocationSharingService>
+): LocationSharingService {
+  const svc = new LocationSharingService(...args);
+  running.push(svc);
+  return svc;
+}
+
+afterEach(async () => {
+  await Promise.all(running.splice(0).map((svc) => svc.shutdownAsync()));
+});
+
 const friend: ContactCard = {
   endpointId: 'bb22',
   handle: '@bee',
@@ -126,7 +146,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('imports a friend docs namespace (their docTicket) when added', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     await svc.init('@me', 'mothman');
     await svc.addFriend(friend);
     expect(mockHolder.mod.calls.importDocTicket).toContain('doc-b');
@@ -134,7 +154,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('removes a friend, revokes sharing, and tears down their subscription', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     const snapshots: SharingSnapshot[] = [];
     svc.onChange((snapshot) => snapshots.push(snapshot));
     await svc.init('@me', 'mothman');
@@ -169,7 +189,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('can re-add a friend after their old subscription fails to close', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     await svc.init('@me', 'mothman');
     await svc.addFriend(friend);
     mockHolder.mod.unsubscribeFailures.add('sub-topic-bb22');
@@ -184,7 +204,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('publishes the configured cryptid metadata in its contact card', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     await svc.init('@me', '  /\\\n (oo)', 'Tunnel Oracle', '#337FBE');
     expect(svc.selfCard()).toMatchObject({
       handle: '@me',
@@ -195,7 +215,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('mirrors each published fix to the durable docs path with the same seq', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     await svc.init('@me', 'mothman');
     await svc.addFriend(friend);
     await svc.shareWith(friend.endpointId);
@@ -208,7 +228,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('forces a supplied fix through the publish path without sampling', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     Object.assign(svc, { mod: mockHolder.mod, status: 'ready' });
     const fix = { lat: 1, lon: 2, accuracyM: 5, headingDeg: 0, ts: 123 };
     const publish = jest.spyOn(svc, 'publishFix').mockResolvedValue(9);
@@ -226,7 +246,7 @@ describe('LocationSharingService — durable trail wiring', () => {
         transport: async () => {},
       })
     );
-    const svc = new LocationSharingService();
+    const svc = makeService();
     await svc.init('@me', 'mothman');
     await svc.addFriend(friend);
     await svc.shareWith(friend.endpointId);
@@ -245,7 +265,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('syncTrail triggers native range reconciliation', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     await svc.init('@me', 'mothman');
     await svc.syncTrail(0);
     expect(mockHolder.mod.calls.syncTrail).toEqual([{ since: 0, peerTicket: null }]);
@@ -258,7 +278,7 @@ describe('LocationSharingService — durable trail wiring', () => {
       psk: null,
     };
     const stash = { configured: true, registerNamespace: async () => {} };
-    const svc = new LocationSharingService({ stash });
+    const svc = makeService({ stash });
     await svc.init('@me', 'mothman');
     await svc.setStashOptIn(true);
 
@@ -290,7 +310,7 @@ describe('LocationSharingService — durable trail wiring', () => {
       },
     });
     setTelemetryForTesting(telemetry);
-    const svc = new LocationSharingService({
+    const svc = makeService({
       stash: { configured: true, registerNamespace: async () => {} },
     });
     await svc.init('@me', 'mothman');
@@ -324,7 +344,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('syncTrail reads the durable replica into the trail (silent reconciliation)', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     await svc.init('@me', 'mothman');
     await svc.addFriend(friend);
     // Reconciliation landed a friend fix in the replica without firing a live/backfill event.
@@ -344,7 +364,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('routes a backfill onFix into the trail and flags it', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     const received: IncomingFix[] = [];
     svc.onFix((f) => received.push(f));
     await svc.init('@me', 'mothman');
@@ -365,7 +385,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('exposes the full retained trail for known friends', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     await svc.init('@me', 'mothman');
     await svc.addFriend(friend);
 
@@ -390,7 +410,7 @@ describe('LocationSharingService — durable trail wiring', () => {
   });
 
   it('surfaces the recovered count from onSync into the snapshot', async () => {
-    const svc = new LocationSharingService();
+    const svc = makeService();
     let recovered: number | null = null;
     svc.onChange((s) => {
       recovered = s.lastSyncRecovered;
@@ -410,7 +430,7 @@ describe('LocationSharingService — durable trail wiring', () => {
     }
 
     it('defaults to 5 minutes and surfaces it on the snapshot', async () => {
-      const svc = new LocationSharingService();
+      const svc = makeService();
       const latest = observe(svc);
       await svc.init('@me', 'mothman');
 
@@ -418,7 +438,7 @@ describe('LocationSharingService — durable trail wiring', () => {
     });
 
     it('persists a chosen interval and emits the change', async () => {
-      const svc = new LocationSharingService();
+      const svc = makeService();
       await svc.init('@me', 'mothman');
       const latest = observe(svc);
 
@@ -431,7 +451,7 @@ describe('LocationSharingService — durable trail wiring', () => {
     });
 
     it('ignores an off-grid interval, which would break slot alignment', async () => {
-      const svc = new LocationSharingService();
+      const svc = makeService();
       await svc.init('@me', 'mothman');
       const latest = observe(svc);
 

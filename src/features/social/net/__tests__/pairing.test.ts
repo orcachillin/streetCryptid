@@ -244,6 +244,26 @@ jest.mock('expo-secure-store', () => ({
 // eslint-disable-next-line import/first
 import { LocationSharingService, type SharingSnapshot } from '../location-sharing';
 
+/**
+ * A service started here owns a 4s pairing poll (and, once sharing is on, a live-request poll).
+ * Jest tears the module registry down between test files but leaves the process — and its real
+ * timers — alive, so a service left running fires into a dead registry and crashes an unrelated
+ * suite. Every service a test starts gets shut down with it.
+ */
+const running: LocationSharingService[] = [];
+
+function makeService(
+  ...args: ConstructorParameters<typeof LocationSharingService>
+): LocationSharingService {
+  const svc = new LocationSharingService(...args);
+  running.push(svc);
+  return svc;
+}
+
+afterEach(async () => {
+  await Promise.all(running.splice(0).map((svc) => svc.shutdownAsync()));
+});
+
 function profileView(overrides: Partial<ProfileView> & { endpointId: string }): ProfileView {
   return {
     epoch: 100,
@@ -297,7 +317,7 @@ function sasChallenge(overrides: Partial<SasChallenge> = {}): SasChallenge {
 
 const services: LocationSharingService[] = [];
 function newService(): LocationSharingService {
-  const svc = new LocationSharingService();
+  const svc = makeService();
   services.push(svc);
   return svc;
 }
@@ -1156,7 +1176,7 @@ describe('LocationSharingService — pairing / profile wiring', () => {
   it('stops polling after shutdown', async () => {
     jest.useFakeTimers();
     try {
-      const svc = new LocationSharingService();
+      const svc = makeService();
       await svc.init('@me', 'mothman');
       await jest.advanceTimersByTimeAsync(0); // flush the immediate init poll
 

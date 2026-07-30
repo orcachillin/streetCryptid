@@ -120,6 +120,26 @@ jest.mock('../persistence', () => ({
 // eslint-disable-next-line import/first
 import { LocationSharingService, type LiveSnapshot } from '../location-sharing';
 
+/**
+ * A service started here owns a 4s pairing poll (and, once sharing is on, a live-request poll).
+ * Jest tears the module registry down between test files but leaves the process — and its real
+ * timers — alive, so a service left running fires into a dead registry and crashes an unrelated
+ * suite. Every service a test starts gets shut down with it.
+ */
+const running: LocationSharingService[] = [];
+
+function makeService(
+  ...args: ConstructorParameters<typeof LocationSharingService>
+): LocationSharingService {
+  const svc = new LocationSharingService(...args);
+  running.push(svc);
+  return svc;
+}
+
+afterEach(async () => {
+  await Promise.all(running.splice(0).map((svc) => svc.shutdownAsync()));
+});
+
 const friend = {
   endpointId: 'bb22',
   handle: '@bee',
@@ -170,7 +190,7 @@ describe('live mode — sending a request', () => {
   });
 
   it('wraps the request for exactly that friend and nobody else', async () => {
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
 
     await svc.requestLive(friend.endpointId);
@@ -185,7 +205,7 @@ describe('live mode — sending a request', () => {
   });
 
   it('pushes after writing, or the request never leaves the phone', async () => {
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
 
     await svc.requestLive(friend.endpointId);
@@ -195,20 +215,20 @@ describe('live mode — sending a request', () => {
   });
 
   it('surfaces who we have asked', async () => {
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
     await svc.requestLive(friend.endpointId);
     expect(live(svc).watching).toEqual([friend.endpointId]);
   });
 
   it('refuses to ask a stranger', async () => {
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
     await expect(svc.requestLive('nope')).rejects.toThrow(/not a friend/);
   });
 
   it('supersedes the request with a cancel', async () => {
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
     await svc.requestLive(friend.endpointId);
 
@@ -231,7 +251,7 @@ describe('live mode — receiving a request', () => {
   });
 
   it('reconciles before reading — an unpulled request is invisible', async () => {
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
     mockHolder.mod.calls.syncTrail.length = 0;
 
@@ -242,7 +262,7 @@ describe('live mode — receiving a request', () => {
   });
 
   it('arms a live session for a friend we share with, with no prompt', async () => {
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
     mockHolder.mod.control[friend.endpointId] = [msg()];
 
@@ -255,7 +275,7 @@ describe('live mode — receiving a request', () => {
 
   it('ignores a request from someone we have revoked', async () => {
     mockHolder.pool = { friends: { [friend.endpointId]: friend }, sharingWith: [] };
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
     mockHolder.mod.control[friend.endpointId] = [msg()];
 
@@ -266,7 +286,7 @@ describe('live mode — receiving a request', () => {
 
   it('does not re-arm on a second poll of the same still-present entry', async () => {
     // The sender's slot keeps serving the same message; re-arming would silently extend the window.
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
     mockHolder.mod.control[friend.endpointId] = [msg()];
 
@@ -278,7 +298,7 @@ describe('live mode — receiving a request', () => {
   });
 
   it('stops the session when the watcher cancels', async () => {
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
     mockHolder.mod.control[friend.endpointId] = [msg()];
     await poll(svc);
@@ -295,7 +315,7 @@ describe('live mode — receiving a request', () => {
   });
 
   it('stops a session on the user’s explicit stop', async () => {
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
     mockHolder.mod.control[friend.endpointId] = [msg()];
     await poll(svc);
@@ -306,14 +326,14 @@ describe('live mode — receiving a request', () => {
   });
 
   it('remembers handled nonces across a restart', async () => {
-    const first = new LocationSharingService(stashDeps());
+    const first = makeService(stashDeps());
     await first.init('@me', 'mothman');
     mockHolder.mod.control[friend.endpointId] = [msg()];
     await poll(first);
     expect(mockHolder.handled.map((h) => h.nonce)).toEqual(['ab'.repeat(16)]);
 
     // A fresh service (process restart) must not re-arm from the same still-current entry.
-    const second = new LocationSharingService(stashDeps());
+    const second = makeService(stashDeps());
     await second.init('@me', 'mothman');
     await poll(second);
 
@@ -323,7 +343,7 @@ describe('live mode — receiving a request', () => {
   it('ignores a stale entry without burning its nonce', async () => {
     // A later legitimate re-send of the same message must still be actionable, so a `stale` verdict
     // must not be recorded as handled.
-    const svc = new LocationSharingService(stashDeps());
+    const svc = makeService(stashDeps());
     await svc.init('@me', 'mothman');
     mockHolder.mod.control[friend.endpointId] = [msg({ ts: Date.now() - 60 * 60_000 })];
 
