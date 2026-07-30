@@ -31,7 +31,13 @@ Conventions when changing that code:
   `tracing` spans; OTLP is a subscriber layer behind the `otel` cargo feature (default-on in
   the mobile crate; keep call sites free of `#[cfg]`).
 - Everything is gated on `EXPO_PUBLIC_OTEL_ENDPOINT` (read statically — see the
-  `stash-config.ts` convention). It must stay unset in the production EAS profile.
+  `stash-config.ts` convention). **TEMPORARY:** it is currently set on the `production` EAS
+  profile too (and so inherited by `production-internal-*`), deliberately, so that builds we
+  actually install report traces. That profile is what `release.yml` builds and what
+  `submit.production` sends to App Store Connect and the Play internal track — so this ships
+  telemetry to `otlp.junephilip.com` from real users' devices, which must be disclosed in the
+  privacy policy or stripped before the first public submission. Strip the `env` block from
+  `production` in `eas.json` to revert.
 - Headless background code that records telemetry must flush before returning
   (`getTelemetry().flush()` / `flushDevTelemetry()`), or the OS freezes the process with the
   batch unexported.

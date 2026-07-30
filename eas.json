@@ -27,16 +27,16 @@
       "channel": "production",
       "environment": "production",
       "autoIncrement": true,
-      "credentialsSource": "remote"
+      "credentialsSource": "remote",
+      "env": {
+        "EXPO_PUBLIC_OTEL_ENDPOINT": "https://otlp.junephilip.com"
+      }
     },
     "production-internal-ios": {
       "extends": "production",
       "developmentClient": false,
       "distribution": "internal",
       "autoIncrement": false,
-      "env": {
-        "EXPO_PUBLIC_OTEL_ENDPOINT": "https://otlp.junephilip.com"
-      },
       "ios": {
         "simulator": false
       }
@@ -46,9 +46,6 @@
       "developmentClient": false,
       "distribution": "internal",
       "autoIncrement": false,
-      "env": {
-        "EXPO_PUBLIC_OTEL_ENDPOINT": "https://otlp.junephilip.com"
-      },
       "android": {
         "buildType": "apk"
       }
