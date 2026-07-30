@@ -34,7 +34,9 @@
       "developmentClient": false,
       "distribution": "internal",
       "autoIncrement": false,
-      "environment": "preview",
+      "env": {
+        "EXPO_PUBLIC_OTEL_ENDPOINT": "https://otlp.junephilip.com"
+      },
       "ios": {
         "simulator": false
       }
@@ -44,7 +46,9 @@
       "developmentClient": false,
       "distribution": "internal",
       "autoIncrement": false,
-      "environment": "preview",
+      "env": {
+        "EXPO_PUBLIC_OTEL_ENDPOINT": "https://otlp.junephilip.com"
+      },
       "android": {
         "buildType": "apk"
       }
