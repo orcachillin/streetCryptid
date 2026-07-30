@@ -1589,8 +1589,10 @@ export class LocationSharingService implements FixPublisher {
       // `ensureSharingArmedHeadless`. Writing it earlier would let a start that then threw leave
       // behind an intent the self-heal would keep trying to honour.
       await saveSharingEnabled(this.kv, true);
-      // Arm the iOS revive fence around where we are now. This is the only mechanism that relaunches
-      // a terminated iOS app; on Android it is a no-op (WorkManager covers that case).
+      // Arm the revive fence around where we are now. On iOS it is the only mechanism that
+      // relaunches a terminated app; on Android it cannot do that, but a geofence event is a
+      // documented exemption to the ban on starting a foreground service from the background, which
+      // is the only way the self-heal can legally re-arm. See `revive-task.ts`.
       try {
         const { armReviveFence } = await import('./background/revive-task');
         await armReviveFence(firstFix);

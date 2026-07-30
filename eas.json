@@ -34,6 +34,7 @@
       "developmentClient": false,
       "distribution": "internal",
       "autoIncrement": false,
+      "environment": "preview",
       "ios": {
         "simulator": false
       }
@@ -43,6 +44,7 @@
       "developmentClient": false,
       "distribution": "internal",
       "autoIncrement": false,
+      "environment": "preview",
       "android": {
         "buildType": "apk"
       }

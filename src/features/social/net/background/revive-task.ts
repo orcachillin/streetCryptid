@@ -25,11 +25,23 @@ import type { LocationFix } from '../../core/types';
  * party can resolve to a real person). Both require `Always` authorization, which the app already
  * requests.
  *
- * ## Why it is iOS-only
+ * ## It earns its keep on Android too, for a completely different reason
  * The Expo docs are explicit that on Android "a terminated app will not automatically restart when a
- * location or geofencing event occurs due to platform limitations." Android's resurrection path is
- * WorkManager, which survives reboot and already drives the periodic backfill — see
- * `ensureSharingArmedHeadless`. Registering a fence there would burn battery for nothing.
+ * location or geofencing event occurs" — so the fence is NOT a resurrection mechanism there. It is
+ * armed anyway because a geofence transition is one of the documented exemptions to the Android 12+
+ * ban on starting a foreground service from the background ("your app receives an event that's
+ * related to geofencing or activity recognition transition").
+ *
+ * That matters because re-arming location updates *is* starting a foreground service, so the
+ * self-heal has no legal way to run from an ordinary WorkManager wake — it throws
+ * `ForegroundServiceStartNotAllowedException`. Arriving via a geofence event is a window in which it
+ * is allowed. See `ensureSharingArmedHeadless`.
+ *
+ * Android's other recovery paths, for reference: `LocationTaskService` returns
+ * `START_REDELIVER_INTENT`, so the system restarts it by itself after an ordinary process kill —
+ * which is why the kill case needs no help from us there. Reboot is the genuine gap: it needs either
+ * a `BOOT_COMPLETED` receiver (expo-location declares none) or the user turning off battery
+ * optimisation, which is a blanket exemption. Neither is solved here.
  *
  * ## What it deliberately does NOT do
  * It does not publish, sample, or carry position data anywhere. Crossing the fence re-arms the
@@ -77,13 +89,13 @@ export const REVIVE_FENCE_REGION_ID = 'streetcryptid.revive';
  * Fence radius in metres. A trade-off with no clean answer: too small and a stationary phone
  * thrashes on GPS jitter, waking constantly; too large and a killed app stays dead across a long
  * trip. ~200 m sits above typical urban fix noise while still tripping within a block or two of
- * leaving. iOS allows 20 simultaneous regions and this uses exactly one.
+ * leaving. iOS allows 20 simultaneous regions (Android 100) and this uses exactly one.
  */
 export const REVIVE_FENCE_RADIUS_M = 200;
 
 /** True when this platform + build can actually host the revive fence. */
 export function isReviveFenceAvailable(): boolean {
-  return Platform.OS === 'ios' && tryTaskManager() !== null && tryLocation() !== null;
+  return Platform.OS !== 'web' && tryTaskManager() !== null && tryLocation() !== null;
 }
 
 /**
@@ -93,7 +105,7 @@ export function isReviveFenceAvailable(): boolean {
  */
 export function defineReviveTask(run: (parent?: SpanContext) => Promise<void>): void {
   const taskManager = tryTaskManager();
-  if (!taskManager || Platform.OS !== 'ios') return;
+  if (!taskManager || Platform.OS === 'web') return;
   taskManager.defineTask(REVIVE_FENCE_TASK, ({ error }) =>
     withEventLogLaunchContext('background', async () => {
       const telemetry = getTelemetry();
@@ -152,7 +164,7 @@ export async function armReviveFence(fix: LocationFix): Promise<boolean> {
 
 /** Remove the fence. Idempotent; safe when it was never armed. */
 export async function disarmReviveFence(): Promise<void> {
-  if (Platform.OS !== 'ios') return;
+  if (Platform.OS === 'web') return;
   const location = tryLocation();
   const taskManager = tryTaskManager();
   if (!location || !taskManager) return;
