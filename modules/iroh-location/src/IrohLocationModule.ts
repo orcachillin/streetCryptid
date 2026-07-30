@@ -7,6 +7,7 @@ import type {
   BleCapabilities,
   BlePeer,
   BumpResolution,
+  NativeControlMsg,
   NativeIncomingFix,
   NativeLocationFix,
   NodeKeys,
@@ -58,6 +59,10 @@ export declare class IrohLocationNativeModule
   syncTrail(sinceTs: number, peerTicket: string | null, traceparent?: string | null): Promise<void>;
   /** Optional for compatibility with installed iOS binaries built before the push API. */
   pushTrail?(peerTicket: string | null, traceparent?: string | null): Promise<void>;
+  /** Optional for compatibility with installed iOS binaries built before the control API. */
+  docsWriteControl?(msg: NativeControlMsg, recipientsHex: string[]): Promise<void>;
+  /** Optional for compatibility with installed iOS binaries built before the control API. */
+  readControl?(author: string): Promise<NativeControlMsg[]>;
   readTrail(author: string, sinceTs: number): Promise<NativeIncomingFix[]>;
   pruneTrail(olderThanTs: number): Promise<void>;
   docTicket(): Promise<string>;

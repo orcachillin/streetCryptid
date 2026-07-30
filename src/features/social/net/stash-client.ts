@@ -1,9 +1,14 @@
 /**
  * Client for the trail stash control API (https://github.com/unrealJune/trail-stash). Grants the
- * stash opt-in replication of a trail namespace by presenting its read-ticket, and (optionally)
- * subscribes this device's push token so the stash can wake it when a friend posts. The stash is
+ * stash opt-in replication of a trail namespace by presenting its read-ticket. The stash is
  * ciphertext-blind: presenting a read-ticket only grants *replication* of already-sealed envelopes,
  * never decryption.
+ *
+ * **Device push tokens are deliberately never sent** (ARCHITECTURE.md §10). The stash's wake API
+ * still exists server-side, but registering a token against namespaces let the operator identify
+ * which namespace was ours — under bilateral pairing your token appeared against every friend's
+ * namespace and never your own, so the gap named you. Live mode polls for requests instead (§9c),
+ * so no wake is needed. Registration is now a read-ticket and nothing else.
  *
  * All calls are best-effort — a failure only means offline delivery is degraded, never that the
  * live path or peer-only reconciliation breaks. Mirrors the pairing-mailbox client conventions.
@@ -15,13 +20,9 @@ import { getTelemetry, traceparentFor } from '@/features/dev/telemetry';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-export type StashPlatform = 'apns' | 'fcm';
-
-/** A namespace grant: the trail read-ticket, plus optionally a device push token to be woken. */
+/** A namespace grant: the trail read-ticket, and nothing that identifies this device. */
 export interface StashRegistration {
   readTicket: string;
-  pushToken?: string | null;
-  platform?: StashPlatform | null;
 }
 
 export class StashClientError extends Error {}
@@ -32,11 +33,6 @@ export interface StashClient {
   readonly configured: boolean;
   /** Grant replication of a namespace (`POST /v1/namespaces`); idempotent server-side. */
   registerNamespace(reg: StashRegistration): Promise<void>;
-  /** Drop this device's wake subscription for a namespace (`DELETE …/subscription`). */
-  unsubscribe(
-    namespaceId: string,
-    sub: { pushToken: string; platform: StashPlatform }
-  ): Promise<void>;
 }
 
 function isAbortError(err: unknown): boolean {
@@ -62,32 +58,15 @@ export class HttpStashClient implements StashClient {
   }
 
   async registerNamespace(reg: StashRegistration): Promise<void> {
+    // Read ticket only — the `push_token` / `platform` fields the server still accepts are
+    // deliberately never populated. See the module header.
     const body: Record<string, string> = { read_ticket: reg.readTicket };
-    // push token + platform must be sent together or not at all (server rejects a partial pair).
-    if (reg.pushToken && reg.platform) {
-      body.push_token = reg.pushToken;
-      body.platform = reg.platform;
-    }
     const res = await this.request('POST', '/v1/namespaces', JSON.stringify(body));
     if (res.status === 201) return;
     throw this.failureFor('registerNamespace', res.status);
   }
 
-  async unsubscribe(
-    namespaceId: string,
-    sub: { pushToken: string; platform: StashPlatform }
-  ): Promise<void> {
-    const res = await this.request(
-      'DELETE',
-      `/v1/namespaces/${namespaceId}/subscription`,
-      JSON.stringify({ push_token: sub.pushToken, platform: sub.platform })
-    );
-    // 204 (removed) and 404-shaped idempotency are both "gone"; the server returns 204 regardless.
-    if (res.status === 204 || res.status === 200) return;
-    throw this.failureFor('unsubscribe', res.status);
-  }
-
-  private async request(method: 'POST' | 'DELETE', path: string, body: string): Promise<Response> {
+  private async request(method: 'POST', path: string, body: string): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -129,10 +108,6 @@ export class HttpStashClient implements StashClient {
 export class NoopStashClient implements StashClient {
   readonly configured = false;
   async registerNamespace(_reg: StashRegistration): Promise<void> {}
-  async unsubscribe(
-    _namespaceId: string,
-    _sub: { pushToken: string; platform: StashPlatform }
-  ): Promise<void> {}
 }
 
 /**

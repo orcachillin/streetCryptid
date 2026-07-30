@@ -65,6 +65,8 @@ export default function MapScreenBody() {
     snapshot,
     pairFromInput,
     toggleShare,
+    toggleWatch,
+    stopWatcher,
     removeFriend,
   } = useLocationSharing();
   const routeFriendId = requestedFriendId ?? null;
@@ -426,10 +428,30 @@ export default function MapScreenBody() {
             ? (snapshot?.sharingWith ?? []).includes(profilePresence.friend.endpointId)
             : false
         }
+        watching={
+          profilePresence
+            ? (snapshot?.live.watching ?? []).includes(profilePresence.friend.endpointId)
+            : false
+        }
+        watchedUntil={
+          profilePresence
+            ? ((snapshot?.live.watchers ?? []).find(
+                (w) => w.author === profilePresence.friend.endpointId
+              )?.expiresAt ?? null)
+            : null
+        }
         onClose={() => setProfileEndpoint(null)}
         onToggleShare={async (on) => {
           if (!profilePresence) return;
           await toggleShare(profilePresence.friend.endpointId, on);
+        }}
+        onToggleWatch={async (on) => {
+          if (!profilePresence) return;
+          await toggleWatch(profilePresence.friend.endpointId, on);
+        }}
+        onStopWatcher={async () => {
+          if (!profilePresence) return;
+          await stopWatcher(profilePresence.friend.endpointId);
         }}
         onViewMap={() => {
           if (!profilePresence) return;

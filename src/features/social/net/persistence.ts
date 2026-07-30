@@ -1,5 +1,6 @@
 import type { PoolState } from '../core/pool';
 import { InMemoryKV, type PersistentKV } from './background/fix-outbox';
+import type { HandledNonce } from './live-requests';
 import { DEFAULT_SHARE_INTERVAL_MS } from './background/sampling-policy';
 import { InMemoryTrailStorage, type TrailPoint, type TrailStorage } from './background/trail-store';
 
@@ -235,6 +236,37 @@ export async function savePool(kv: PersistentKV, state: PoolState): Promise<void
     POOL_KEY,
     JSON.stringify({ friends: state.friends, sharingWith: state.sharingWith })
   );
+}
+
+const HANDLED_CTL_KEY = 'sc.social.handledControlNonces';
+
+/**
+ * Load the control-message nonces we have already acted on. Persisted, not in-memory: a request
+ * the user declined must stay declined across a restart, or the next poll would re-prompt for it
+ * (the sender's control slot still holds the same entry). See `live-requests.ts`.
+ */
+export async function loadHandledNonces(kv: PersistentKV): Promise<HandledNonce[]> {
+  const raw = await kv.get(HANDLED_CTL_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (h): h is HandledNonce =>
+        typeof (h as HandledNonce)?.nonce === 'string' &&
+        typeof (h as HandledNonce)?.at === 'number'
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Persist the handled-nonce list. Callers prune first (`pruneHandledNonces`) so it stays small. */
+export async function saveHandledNonces(
+  kv: PersistentKV,
+  handled: readonly HandledNonce[]
+): Promise<void> {
+  await kv.set(HANDLED_CTL_KEY, JSON.stringify(handled));
 }
 
 const STASH_OPTIN_KEY = 'sc.social.stashOptIn';

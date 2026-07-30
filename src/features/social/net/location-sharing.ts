@@ -1,3 +1,4 @@
+import { getRandomBytesAsync } from 'expo-crypto';
 import { Platform } from 'react-native';
 
 import {
@@ -7,6 +8,7 @@ import {
   type BleCapabilities,
   type BlePeer,
   type IrohLocationNativeModule,
+  type NativeControlMsg,
   type NativeLocationFix,
   type NodeKeys,
   type OnFixEvent,
@@ -23,7 +25,6 @@ import {
 import {
   getOtelConfig,
   getTelemetry,
-  parseTraceparent,
   recordEventLog,
   traceparentFor,
   type SpanContext,
@@ -67,10 +68,12 @@ import {
 import {
   createPersistentKV,
   createPersistentTrailStorage,
+  loadHandledNonces,
   loadPool,
   loadShareIntervalMs,
   loadStashOptIn,
   loadTransportPreferences,
+  saveHandledNonces,
   savePool,
   saveShareIntervalMs,
   saveStashOptIn,
@@ -82,11 +85,21 @@ import {
 import { DEFAULT_SHARE_INTERVAL_MS } from './background/sampling-policy';
 import { createDefaultStashClient, type StashClient } from './stash-client';
 import {
-  createDefaultPushTokenProvider,
-  type DevicePushToken,
-  type PushTokenProvider,
-  type TrailSyncPush,
-} from './push-token-provider';
+  activeWatchers,
+  armWatcher,
+  buildLiveCancel,
+  buildLiveRequest,
+  clampLiveTtl,
+  disarmWatcher,
+  evaluateControlMsg,
+  liveUntil as liveUntilFrom,
+  markHandled,
+  mintNonce,
+  LIVE_TTL_DEFAULT_MS,
+  type HandledNonce,
+  type RandomBytesFn,
+  type WatcherSession,
+} from './live-requests';
 import { loadKeys, saveKeys } from './secure-keys';
 import { loadSeq, saveSeq } from './state-store';
 
@@ -196,6 +209,22 @@ export interface SharingSnapshot {
   shareIntervalMs: number;
   /** Bilateral-pairing / nearby-discovery state. */
   pairing: PairingSnapshot;
+  /** Live-mode request state (ARCHITECTURE §9c). */
+  live: LiveSnapshot;
+}
+
+/**
+ * Live-mode state for the UI (ARCHITECTURE §9c). There is no consent queue and no per-friend
+ * permission: a friend we share with arms live mode directly. This exists so the UI can *show*
+ * what is happening and offer a stop, not to gate it.
+ */
+export interface LiveSnapshot {
+  /** Friends currently watching us live, with when each window ends. */
+  watchers: { author: string; expiresAt: number }[];
+  /** When the current live window ends (ms since epoch), or null when we are not live. */
+  liveUntil: number | null;
+  /** Friends we have an outstanding live request out to (we are watching them). */
+  watching: string[];
 }
 
 export interface LocationSharingInitOptions {
@@ -220,6 +249,20 @@ interface Removable {
 
 /** How often the pairing/discovery queues are drained once the node has started (ms). */
 const PAIRING_POLL_INTERVAL_MS = 4000;
+
+/**
+ * How often we check friends' control slots for live-mode requests (ARCHITECTURE §9c).
+ *
+ * Fixed at 5 min rather than following {@link SHARE_INTERVAL_OPTIONS_MS}: riding the share cadence
+ * would make requests 15-min-slow for anyone on the long interval and needlessly chatty on the
+ * short one. It also keeps this read traffic decoupled from the publish cadence, which is a
+ * security property (§9) — and a constant-rate poll reveals nothing about movement.
+ *
+ * This is the floor on how long a live request takes to be noticed, so it is also the number that
+ * makes live mode "ask to watch" rather than "watch now".
+ */
+const LIVE_REQUEST_POLL_INTERVAL_MS = 5 * 60_000;
+
 const BUMP_POLL_INTERVAL_MS = 300;
 const BUMP_RESOLVE_TIMEOUT_MS = 12_000;
 export const BUMP_WINDOW_MS = 15_000;
@@ -304,12 +347,6 @@ export class LocationSharingService implements FixPublisher {
   private stashOptIn = false;
   /** Persisted native endpoint transports. All paths are enabled by default. */
   private transportPreferences: TransportPreferences = { ...DEFAULT_TRANSPORT_PREFERENCES };
-  /** Native push-token source for stash wake-ups. */
-  private readonly pushTokens: PushTokenProvider;
-  /** Cached device push token (undefined = not yet attempted; null = unavailable/denied). */
-  private cachedPushToken: DevicePushToken | null | undefined;
-  /** Whether the stash background-sync handler has been registered (once). */
-  private stashBackgroundSyncRegistered = false;
   private pairingActivity = '';
   /** Sessions we initiated, keyed by session id to preserve the pairing method through completion. */
   private readonly initiatedRoutes = new Map<string, PairingMethod>();
@@ -341,6 +378,24 @@ export class LocationSharingService implements FixPublisher {
   /** Auto-revert timer for a bounded live-tracking window; null when ambient. */
   private liveTrackingTimer: ReturnType<typeof setTimeout> | null = null;
   /**
+   * Polls friends' control slots for live-mode requests (ARCHITECTURE §9c). Deliberately its OWN
+   * timer rather than riding {@link heartbeatTimer}: the share interval is user-selectable
+   * (1/5/15 min), so the heartbeat would make requests 15-min-slow on the long cadence and
+   * needlessly chatty on the short one. Keeping them separate also keeps the publish cadence — a
+   * security property, see §9 — untangled from this read traffic. A constant-rate poll leaks
+   * nothing about movement.
+   */
+  private liveRequestPollTimer: ReturnType<typeof setInterval> | null = null;
+  private liveRequestPollInFlight: Promise<void> | null = null;
+  /** Armed live sessions, by watching friend. */
+  private watcherSessions: WatcherSession[] = [];
+  /** Control nonces already acted on. Persisted; see `live-requests.ts`. */
+  private handledNonces: HandledNonce[] = [];
+  /** Nonce of the outstanding request WE sent per friend, so we can cancel it later. */
+  private readonly sentRequestNonces = new Map<string, string>();
+  /** Injectable CSPRNG for control nonces; tests supply a deterministic one. */
+  private readonly randomBytes: RandomBytesFn;
+  /**
    * Drives {@link LocationEngine.heartbeat} at the sampling interval. This is what keeps the
    * cadence constant while the user is stationary: with no movement the OS may deliver no fixes at
    * all, and without a heartbeat the envelopes would simply stop — making silence mean "not moving".
@@ -359,11 +414,11 @@ export class LocationSharingService implements FixPublisher {
    *   `EXPO_PUBLIC_PAIR_MAILBOX_URL`; tests can inject a fake.
    */
   constructor(
-    deps: { mailbox?: PairingMailbox; stash?: StashClient; pushTokens?: PushTokenProvider } = {}
+    deps: { mailbox?: PairingMailbox; stash?: StashClient; randomBytes?: RandomBytesFn } = {}
   ) {
     this.mailbox = deps.mailbox ?? createDefaultPairingMailbox();
     this.stash = deps.stash ?? createDefaultStashClient();
-    this.pushTokens = deps.pushTokens ?? createDefaultPushTokenProvider();
+    this.randomBytes = deps.randomBytes ?? ((n) => getRandomBytesAsync(n));
   }
 
   /** Whether offline delivery via the stash is both configured (deployed) and opted into. */
@@ -425,7 +480,6 @@ export class LocationSharingService implements FixPublisher {
     this.stashOptIn = optedIn;
     await saveStashOptIn(this.kv, optedIn);
     if (optedIn) {
-      this.registerStashBackgroundSync();
       await this.syncStashGrants();
       await this.ensureMySubscription();
     }
@@ -464,51 +518,21 @@ export class LocationSharingService implements FixPublisher {
     await getTelemetry().flush();
   }
 
-  /** Lazily acquire (once) this device's native push token for stash wake-ups. */
-  private async ensurePushToken(): Promise<DevicePushToken | null> {
-    if (this.cachedPushToken !== undefined) return this.cachedPushToken;
-    try {
-      this.cachedPushToken = await this.pushTokens.acquire();
-    } catch {
-      this.cachedPushToken = null;
-    }
-    return this.cachedPushToken;
-  }
-
-  /** Register (once) the handler that runs a trail sync when a `trail-sync` push arrives. */
-  private registerStashBackgroundSync(): void {
-    if (this.stashBackgroundSyncRegistered) return;
-    this.stashBackgroundSyncRegistered = true;
-    this.pushTokens.registerBackgroundSync((push?: TrailSyncPush) => {
-      // Dev telemetry: the push payload carries the stash's traceparent, so this wake span LINKS
-      // to the exact `stash.wake.push` that woke us — the stash→device half of a ping's journey.
-      const link = parseTraceparent(push?.traceparent);
-      const span = getTelemetry().startSpan('push.wake', {
-        links: link ? [link] : [],
-        attributes: { 'sc.namespace': push?.ns ? push.ns.slice(0, 10) : undefined },
-      });
-      void this.syncTrail(0, span.context)
-        .then(
-          () => {
-            span.setAttribute('recovered', this.lastSyncRecovered ?? undefined);
-            span.setStatus('ok');
-          },
-          (err: unknown) => span.recordError(err)
-        )
-        .finally(() => span.end());
-    });
-  }
-
   /**
    * Grant the stash replication of our own + every friend's trail namespace (best-effort). The
    * stash is ciphertext-blind, so this only lets it hold + reconcile sealed envelopes, never read
-   * them. We subscribe our push token to *friends'* namespaces (so the stash wakes us when they
-   * post), but not our own (waking ourselves is pointless). A failure just degrades offline
-   * delivery to peer-only reconciliation.
+   * them. A failure just degrades offline delivery to peer-only reconciliation.
+   *
+   * **No device push token is sent, deliberately** — see ARCHITECTURE.md §10. An APNs/FCM token is
+   * the one identifier here that a third party can resolve to a real person, and registering it
+   * against namespaces told the stash which namespace was OURS: with bilateral pairing, your token
+   * appeared against every friend's namespace and never your own, so the missing one identified
+   * you by set complement. Live mode's request channel polls instead (§9c), so nothing needs a
+   * wake. The cost is that trail delivery is no longer nudged seconds after a publish — it now
+   * lands on the next poll / periodic backfill.
    */
   private async syncStashGrants(): Promise<void> {
     if (!this.stashEnabled()) return;
-    const push = await this.ensurePushToken();
     const tasks: Promise<void>[] = [];
     const swallow = () => {
       /* best-effort */
@@ -521,11 +545,7 @@ export class LocationSharingService implements FixPublisher {
       if (friend.docTicket) friendTickets.add(friend.docTicket);
     }
     for (const readTicket of friendTickets) {
-      tasks.push(
-        this.stash
-          .registerNamespace({ readTicket, pushToken: push?.token, platform: push?.platform })
-          .catch(swallow)
-      );
+      tasks.push(this.stash.registerNamespace({ readTicket }).catch(swallow));
     }
     await Promise.all(tasks);
   }
@@ -573,12 +593,14 @@ export class LocationSharingService implements FixPublisher {
 
     await this.restorePool(interactive);
     this.stashOptIn = await loadStashOptIn(this.kv);
+    // Restored, not reset: a control nonce we already acted on must stay acted-on across a restart,
+    // or the sender's still-current slot would re-arm us on the next poll.
+    this.handledNonces = await loadHandledNonces(this.kv);
     // Hydrated here as well as in startBackground so settings shows the real value even before
     // background sharing has been switched on.
     this.shareIntervalMs = await loadShareIntervalMs(this.kv);
     if (interactive) {
       await this.importFriendProfiles();
-      if (this.stashEnabled()) this.registerStashBackgroundSync();
       await this.syncStashGrants();
       this.startPairingPolling();
       await this.pollPairingOnce();
@@ -1498,6 +1520,10 @@ export class LocationSharingService implements FixPublisher {
       }, this.shareIntervalMs);
       (this.heartbeatTimer as unknown as { unref?: () => void }).unref?.();
 
+      // Live-mode requests are only actionable while we are actually sampling, so the poll's
+      // lifetime is background sharing's (§9c). Sharing off ⇒ nothing to make live ⇒ nothing to poll.
+      this.startLiveRequestPolling();
+
       this.bgLifecycleStop = createAppLifecycleController({
         onForeground: () => {
           void this.engine?.flush();
@@ -1568,6 +1594,10 @@ export class LocationSharingService implements FixPublisher {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    this.stopLiveRequestPolling();
+    // Sharing off ends any live session outright: there is nothing left to make live, and leaving
+    // stale watchers behind would have the UI claim someone is watching a phone that stopped.
+    this.watcherSessions = [];
     const stopCadence = this.bgCadenceStop;
     this.bgCadenceStop = null;
     this.bgUnwatch?.();
@@ -1609,10 +1639,13 @@ export class LocationSharingService implements FixPublisher {
   /**
    * Turn on real-time live tracking for a bounded window (default 2 min), after which it auto-reverts
    * to the ambient cadence. The background service normally samples calmly to save battery; this is
-   * the on-demand escape hatch for the real-time case — e.g. a future "a friend is actively watching
-   * your location" signal — so the app never pays real-time GPS cost around the clock. `on: false`
-   * (or a fresh call) cancels any active window. No-op until the background service is running; the
-   * cadence controller picks up the engine's new decision and re-programs the OS.
+   * the on-demand escape hatch for the real-time case — a friend actively watching your location —
+   * so the app never pays real-time GPS cost around the clock. `on: false` (or a fresh call) cancels
+   * any active window. No-op until the background service is running; the cadence controller picks
+   * up the engine's new decision and re-programs the OS.
+   *
+   * Prefer {@link applyWatcherSessions} for the request-driven path — it derives the window from the
+   * active watchers so two overlapping watchers cannot cut each other short.
    */
   async setLiveTracking(on: boolean, ttlMs = 120_000): Promise<void> {
     if (this.liveTrackingTimer) {
@@ -1624,10 +1657,198 @@ export class LocationSharingService implements FixPublisher {
       const timer = setTimeout(() => {
         this.liveTrackingTimer = null;
         void this.engine?.setLiveMode(false);
+        // Sessions have lapsed by construction; drop them so the UI stops claiming we are live.
+        this.watcherSessions = activeWatchers(this.watcherSessions, Date.now());
+        this.emit();
       }, ttlMs);
       (timer as unknown as { unref?: () => void }).unref?.();
       this.liveTrackingTimer = timer;
     }
+  }
+
+  // ── Live-mode request channel (ARCHITECTURE §9c) ─────────────────────────────────────────
+
+  /**
+   * Ask `endpointId` to switch to the real-time cadence, by writing an encrypted control message
+   * into OUR namespace (which they replicate) and pushing it. They pick it up on their next poll,
+   * so expect minutes, not seconds — there is deliberately no push wake (§10).
+   *
+   * Wrapped only for that friend, so nobody else — including the stash — can tell a request was
+   * even sent, let alone to whom. Requires that they share with us: watching someone who does not
+   * share their location is meaningless, and we surface that as a failure rather than a silent wait.
+   */
+  async requestLive(endpointId: string, ttlMs = LIVE_TTL_DEFAULT_MS): Promise<void> {
+    const friend = this.state.friends[endpointId];
+    if (!friend) throw new Error('live: not a friend');
+    if (!this.mod) throw new Error('live: node not ready');
+    if (typeof this.mod.docsWriteControl !== 'function') {
+      // iOS bindings predating the control API — see `just bindgen-ios`.
+      throw new Error('live: this build cannot send live requests yet');
+    }
+    const span = getTelemetry().startSpan('live.request.sent', {
+      attributes: { 'sc.peer': endpointId.slice(0, 10), ttl_ms: clampLiveTtl(ttlMs) },
+    });
+    try {
+      const nonce = await mintNonce(this.randomBytes);
+      const msg = buildLiveRequest(Date.now(), ttlMs, nonce);
+      await this.mod.docsWriteControl(msg, [friend.recvPublic]);
+      // docsWriteControl only touches the LOCAL replica — same rule as docsWrite. Without this the
+      // request never leaves the phone and the friend polls forever. See §9 "push-to-stash".
+      //
+      // NOTE: `pushTrail` no-ops when the stash is off, so live requests effectively REQUIRE the
+      // stash. That is inherent, not incidental: without it delivery needs both phones online and
+      // reconciling at the same moment, which is exactly what the stash exists to stop relying on.
+      await this.pushTrail(span.context);
+      this.sentRequestNonces.set(endpointId, nonce);
+      span.setStatus('ok');
+      this.emit();
+    } catch (err) {
+      span.recordError(err);
+      throw err;
+    } finally {
+      span.end();
+    }
+  }
+
+  /**
+   * Withdraw an outstanding live request. Supersedes it in our single control slot, so a friend who
+   * has not polled yet never sees the request at all. Best-effort: if they already armed, they stop
+   * on their next poll (or when the window lapses).
+   */
+  async cancelLiveRequest(endpointId: string): Promise<void> {
+    const friend = this.state.friends[endpointId];
+    if (!friend || !this.mod || typeof this.mod.docsWriteControl !== 'function') return;
+    const nonce = await mintNonce(this.randomBytes);
+    try {
+      await this.mod.docsWriteControl(buildLiveCancel(Date.now(), nonce), [friend.recvPublic]);
+      await this.pushTrail();
+    } catch {
+      /* best-effort — the window lapses on its own regardless */
+    }
+    this.sentRequestNonces.delete(endpointId);
+    this.emit();
+  }
+
+  /** Stop `endpointId`'s live session immediately (the user's "stop" action). */
+  async stopWatcher(endpointId: string): Promise<void> {
+    this.watcherSessions = disarmWatcher(this.watcherSessions, endpointId, Date.now());
+    await this.applyWatcherSessions();
+  }
+
+  /**
+   * Reconcile live tracking with the currently-active watcher sessions: live until the LATEST
+   * expiry across them, ambient when there are none. Called after anything changes the set, so
+   * overlapping watchers extend rather than truncate each other.
+   */
+  private async applyWatcherSessions(): Promise<void> {
+    const now = Date.now();
+    this.watcherSessions = activeWatchers(this.watcherSessions, now);
+    const until = liveUntilFrom(this.watcherSessions, now);
+    if (until === null) {
+      await this.setLiveTracking(false);
+    } else {
+      await this.setLiveTracking(true, until - now);
+    }
+    this.emit();
+  }
+
+  /**
+   * Poll every friend's control slot for live-mode requests. Reconciles first — a request written
+   * by a friend is only visible to us once we have pulled their namespace.
+   *
+   * Serialized: a slow reconciliation must not overlap the next tick.
+   */
+  private async pollLiveRequestsOnce(): Promise<void> {
+    if (this.liveRequestPollInFlight) return this.liveRequestPollInFlight;
+    this.liveRequestPollInFlight = this.runLiveRequestPoll().finally(() => {
+      this.liveRequestPollInFlight = null;
+    });
+    return this.liveRequestPollInFlight;
+  }
+
+  private async runLiveRequestPoll(): Promise<void> {
+    const mod = this.mod;
+    if (!mod || typeof mod.readControl !== 'function') return;
+    const friends = pool.friendList(this.state);
+    if (friends.length === 0) return;
+
+    // Pull first: their control entry reaches us through the same reconciliation as their fixes.
+    try {
+      await this.syncTrail(0);
+    } catch {
+      /* an unreachable stash/peer just means we see requests on a later tick */
+    }
+
+    let changed = false;
+    for (const friend of friends) {
+      let messages: NativeControlMsg[];
+      try {
+        messages = await mod.readControl(friend.endpointId);
+      } catch {
+        continue;
+      }
+      for (const msg of messages) {
+        const now = Date.now();
+        const verdict = evaluateControlMsg(msg, {
+          now,
+          isSharing: pool.isSharingWith(this.state, friend.endpointId),
+          handled: this.handledNonces,
+        });
+        if (verdict.action === 'ignore') {
+          // Only remember decisions about messages we could have acted on. Recording a `stale` or
+          // `not-sharing` nonce would burn it, so a later legitimate re-send of the same message
+          // (after re-enabling sharing, say) would be silently dropped as a duplicate.
+          if (verdict.reason === 'duplicate') continue;
+          const dropped = getTelemetry().startSpan('live.request.ignored', {
+            attributes: {
+              'sc.peer': friend.endpointId.slice(0, 10),
+              'sc.drop_reason': verdict.reason,
+            },
+          });
+          dropped.end();
+          continue;
+        }
+
+        this.handledNonces = markHandled(this.handledNonces, msg.nonce, now);
+        await saveHandledNonces(this.kv, this.handledNonces);
+        changed = true;
+
+        const span = getTelemetry().startSpan(
+          verdict.action === 'arm' ? 'live.armed' : 'live.cancelled',
+          { attributes: { 'sc.peer': friend.endpointId.slice(0, 10) } }
+        );
+        if (verdict.action === 'arm') {
+          span.setAttribute('ttl_ms', verdict.ttlMs);
+          this.watcherSessions = armWatcher(
+            this.watcherSessions,
+            friend.endpointId,
+            now + verdict.ttlMs,
+            now
+          );
+        } else {
+          this.watcherSessions = disarmWatcher(this.watcherSessions, friend.endpointId, now);
+        }
+        span.end();
+      }
+    }
+    if (changed) await this.applyWatcherSessions();
+  }
+
+  /** Start the live-request poll. Idempotent; runs only while background sharing is on. */
+  private startLiveRequestPolling(): void {
+    if (this.liveRequestPollTimer) return;
+    this.liveRequestPollTimer = setInterval(() => {
+      void this.pollLiveRequestsOnce();
+    }, LIVE_REQUEST_POLL_INTERVAL_MS);
+    (this.liveRequestPollTimer as unknown as { unref?: () => void }).unref?.();
+    // Check immediately too, so switching sharing on picks up a request already waiting.
+    void this.pollLiveRequestsOnce();
+  }
+
+  private stopLiveRequestPolling(): void {
+    if (!this.liveRequestPollTimer) return;
+    clearInterval(this.liveRequestPollTimer);
+    this.liveRequestPollTimer = null;
   }
 
   shutdown(): void {
@@ -1644,6 +1865,7 @@ export class LocationSharingService implements FixPublisher {
     // Stop callbacks synchronously before awaiting native teardown.
     this.stopPairingPolling();
     this.stopBumpPolling();
+    this.stopLiveRequestPolling();
     if (this.liveTrackingTimer) {
       clearTimeout(this.liveTrackingTimer);
       this.liveTrackingTimer = null;
@@ -1775,19 +1997,12 @@ export class LocationSharingService implements FixPublisher {
       } catch {
         // Non-fatal: live gossip still works; only offline recovery of their trail is affected.
       }
-      // Also grant the stash replication of their trail so we can catch up while both are offline,
-      // and subscribe our push token so it wakes us when this friend posts.
+      // Also grant the stash replication of their trail so we can catch up while both are offline.
+      // No push token — see `syncStashGrants`.
       if (this.stashEnabled()) {
-        const push = await this.ensurePushToken();
-        void this.stash
-          .registerNamespace({
-            readTicket: card.docTicket,
-            pushToken: push?.token,
-            platform: push?.platform,
-          })
-          .catch(() => {
-            /* best-effort */
-          });
+        void this.stash.registerNamespace({ readTicket: card.docTicket }).catch(() => {
+          /* best-effort */
+        });
       }
     }
     // Replicate + live-sync their profile namespace so identity updates land automatically (§3).
@@ -1933,6 +2148,17 @@ export class LocationSharingService implements FixPublisher {
       transports: this.transportState(),
       shareIntervalMs: this.shareIntervalMs,
       pairing: this.pairingSnapshot(),
+      live: this.liveSnapshot(),
+    };
+  }
+
+  private liveSnapshot(): LiveSnapshot {
+    const now = Date.now();
+    const active = activeWatchers(this.watcherSessions, now);
+    return {
+      watchers: active.map((s) => ({ author: s.author, expiresAt: s.expiresAt })),
+      liveUntil: liveUntilFrom(this.watcherSessions, now),
+      watching: [...this.sentRequestNonces.keys()],
     };
   }
 

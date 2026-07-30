@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import uniffi.iroh_location.BleCapabilities
 import uniffi.iroh_location.BlePeer
 import uniffi.iroh_location.BumpResolution
+import uniffi.iroh_location.ControlMsg
 import uniffi.iroh_location.FixListener
 import uniffi.iroh_location.IncomingFix
 import uniffi.iroh_location.LocationFix
@@ -57,6 +58,26 @@ private fun locationFixOf(fix: Map<String, Double>): LocationFix =
     fix["accuracyM"] ?: 0.0,
     fix["headingDeg"] ?: 0.0,
     (fix["ts"] ?: 0.0).toLong().toULong(),
+  )
+
+/** Build a control message from the JS object (see `NativeControlMsg`). `nonce` crosses as hex. */
+private fun controlMsgOf(msg: Map<String, Any?>): ControlMsg =
+  ControlMsg(
+    ((msg["v"] as? Number)?.toInt() ?: 1).toUByte(),
+    ((msg["kind"] as? Number)?.toInt() ?: 0).toUByte(),
+    ((msg["ts"] as? Number)?.toLong() ?: 0L).toULong(),
+    ((msg["ttlMs"] as? Number)?.toLong() ?: 0L).toUInt(),
+    (msg["nonce"] as? String).orEmpty().hexToBytes(),
+  )
+
+/** Render a control message back to the JS shape. */
+private fun controlMsgToMap(msg: ControlMsg): Map<String, Any> =
+  mapOf(
+    "v" to msg.v.toInt(),
+    "kind" to msg.kind.toInt(),
+    "ts" to msg.ts.toLong(),
+    "ttlMs" to msg.ttlMs.toLong(),
+    "nonce" to msg.nonce.toHex(),
   )
 
 // ── JS-facing conversions: byte arrays → lowercase hex, U64 → JS number ──────────────────────
@@ -499,6 +520,20 @@ class IrohLocationModule : Module() {
         } else {
           n.pushTrail(peerTicket)
         }
+      }
+
+    // Live-mode request channel (ARCHITECTURE §9c). Writes OUR single control slot, superseding
+    // any previous message from us; needs a `pushTrail` afterwards like any other docs write.
+    AsyncFunction("docsWriteControl") Coroutine
+      { msg: Map<String, Any?>, recipients: List<String> ->
+        val n = node ?: throw IllegalStateException("call createNode first")
+        n.docsWriteControl(controlMsgOf(msg), recipients.map { it.hexToBytes() })
+      }
+
+    AsyncFunction("readControl") Coroutine
+      { author: String ->
+        val n = node ?: throw IllegalStateException("call createNode first")
+        n.readControl(author.hexToBytes()).map { controlMsgToMap(it) }
       }
 
     AsyncFunction("readTrail") Coroutine

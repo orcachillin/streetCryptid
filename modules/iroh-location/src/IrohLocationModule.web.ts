@@ -207,6 +207,13 @@ export class IrohLocationNativeModule
     await node.sync_trail(0, peerTicket ?? undefined);
   }
 
+  // NOTE: `docsWriteControl` / `readControl` are deliberately NOT implemented here, and are
+  // optional on `IrohLocationApi` so callers already guard for them. Live mode (ARCHITECTURE §9c)
+  // needs continuous background location, which the web build cannot do — so a web peer can never
+  // be a live-mode subject. It could in principle be a watcher, but this replica is in-memory and
+  // ephemeral (lost on reload), so a control entry written here would be a request the sender
+  // cannot reliably withdraw. Absent beats half-working.
+
   async readTrail(author: string, sinceTs: number): Promise<NativeIncomingFix[]> {
     await ensureWasm();
     return (await this.requireNode().read_trail(author, sinceTs)) as NativeIncomingFix[];

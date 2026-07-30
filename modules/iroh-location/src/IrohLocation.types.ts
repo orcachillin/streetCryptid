@@ -70,6 +70,36 @@ export interface NativeIncomingFix {
   fix: NativeLocationFix;
 }
 
+// ── Control messages (docs/social/ARCHITECTURE.md §9c) ──────────────────────────────────────
+
+/** Ask a friend to switch to the real-time live cadence. */
+export const CTL_KIND_LIVE_REQUEST = 1;
+/** Withdraw an outstanding {@link CTL_KIND_LIVE_REQUEST}. */
+export const CTL_KIND_LIVE_CANCEL = 2;
+
+/**
+ * A control message: the live-mode request channel. Sealed with the same envelope machinery as a
+ * fix and written to the sender's own trail namespace under a `ctl/` key, so the stash and every
+ * pool member it is not wrapped for see only ciphertext. Carries no location.
+ *
+ * There is exactly ONE control slot per author — writing supersedes the previous message — so a
+ * receiver can only ever see the sender's current intent. `ts` + `nonce` are the replay defence:
+ * a replica could withhold an update and keep serving a stale request, so receivers MUST check
+ * freshness and dedupe by `nonce`. See `src/features/social/net/live-requests.ts`.
+ */
+export interface NativeControlMsg {
+  /** Wire version of the payload (currently 1). */
+  v: number;
+  /** One of `CTL_KIND_*`. Unknown kinds must be ignored, not treated as an error. */
+  kind: number;
+  /** When the sender created it (ms since epoch). */
+  ts: number;
+  /** Requested live window in ms; the receiver clamps it and may always refuse. */
+  ttlMs: number;
+  /** 16 random bytes as lowercase hex — this message's dedup identity. */
+  nonce: string;
+}
+
 // ── Profiles (docs/social/ARCHITECTURE.md §3) ───────────────────────────────────────────────
 
 /**
@@ -355,6 +385,29 @@ export interface IrohLocationApi {
    * regenerate on macOS), so callers must guard with `typeof mod.pushTrail === 'function'`.
    */
   pushTrail?(peerTicket: string | null, traceparent?: string | null): Promise<void>;
+  /**
+   * Seal `msg` for `recipientsHex` and write it to OUR namespace's single control slot,
+   * superseding any previous control message from us (ARCHITECTURE §9c). `recipientsHex` is
+   * normally one friend — a live request addressed to one person should be readable by exactly
+   * that person.
+   *
+   * Call {@link pushTrail} afterwards, or it never leaves the device — the same
+   * write-then-push rule as {@link docsWrite}.
+   *
+   * OPTIONAL: absent on iOS bindings generated before this API existed (Swift bindings only
+   * regenerate on macOS), so callers must guard with `typeof mod.docsWriteControl === 'function'`.
+   */
+  docsWriteControl?(msg: NativeControlMsg, recipientsHex: string[]): Promise<void>;
+  /**
+   * Read `author`'s current control message from the local replica, if it is addressed to us.
+   * Empty when there is none, when it is for someone else, or when the content has not
+   * replicated yet — all indistinguishable, and all "nothing to act on".
+   *
+   * Freshness and dedup are the CALLER's responsibility; see {@link NativeControlMsg}.
+   *
+   * OPTIONAL: same iOS bindgen caveat as {@link docsWriteControl}.
+   */
+  readControl?(author: string): Promise<NativeControlMsg[]>;
   /** Read decrypted fixes for `author` (self or a friend) from the local replica, `fix.ts >= sinceTs`. */
   readTrail(author: string, sinceTs: number): Promise<NativeIncomingFix[]>;
   /** Explicitly drop durable entries older than `olderThanTs`. */

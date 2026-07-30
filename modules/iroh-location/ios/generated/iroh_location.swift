@@ -1000,6 +1000,20 @@ public protocol LocationNodeProtocol: AnyObject, Sendable {
      */
     func docsWrite(subscriptionId: String, seq: UInt64, epoch: UInt32, fix: LocationFix, recipients: [Data]) async throws 
     
+    /**
+     * Seal `msg` for `recipients` and write it to our own namespace's control slot
+     * (ARCHITECTURE §9c). Overwrites any previous control message from us — one slot per author,
+     * latest-wins — so a cancel genuinely supersedes the request it withdraws.
+     *
+     * `recipients` is normally a single friend's receiving key: a live request addressed to one
+     * person should be readable by exactly that person. Passing an empty list writes an envelope
+     * nobody can open, which is a no-op in practice but not an error here.
+     *
+     * The envelope's `seq` is fixed at 0 — control entries have no history for it to order, and
+     * replay identity lives in the payload's `nonce`/`ts` instead.
+     */
+    func docsWriteControl(msg: ControlMsg, recipients: [Data]) async throws 
+    
     func docsWriteInner(subscriptionId: String, seq: UInt64, epoch: UInt32, fix: LocationFix, recipients: [Data], traceparent: String?) async throws 
     
     func docsWriteTraced(subscriptionId: String, seq: UInt64, epoch: UInt32, fix: LocationFix, recipients: [Data], traceparent: String) async throws 
@@ -1143,6 +1157,15 @@ public protocol LocationNodeProtocol: AnyObject, Sendable {
     func pushTrailInner(peerTicket: String?, traceparent: String?) async throws 
     
     func pushTrailTraced(peerTicket: String?, traceparent: String) async throws 
+    
+    /**
+     * Read `author`'s current control message, if we can open it. Returns an empty vec when
+     * there is none, when it is addressed to someone else, or when the content has not
+     * replicated locally yet — all indistinguishable and all "nothing to act on".
+     *
+     * Callers MUST still check freshness and dedupe by `nonce`; see [`ControlMsg`].
+     */
+    func readControl(author: Data) async throws  -> [ControlMsg]
     
     /**
      * Read the newest verified profile for `endpoint_id` (self or a friend) from the local
@@ -1473,6 +1496,35 @@ open func docsWrite(subscriptionId: String, seq: UInt64, epoch: UInt32, fix: Loc
                 uniffi_iroh_location_fn_method_locationnode_docs_write(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(subscriptionId),FfiConverterUInt64.lower(seq),FfiConverterUInt32.lower(epoch),FfiConverterTypeLocationFix_lower(fix),FfiConverterSequenceData.lower(recipients)
+                )
+            },
+            pollFunc: ffi_iroh_location_rust_future_poll_void,
+            completeFunc: ffi_iroh_location_rust_future_complete_void,
+            freeFunc: ffi_iroh_location_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeLocationError_lift
+        )
+}
+    
+    /**
+     * Seal `msg` for `recipients` and write it to our own namespace's control slot
+     * (ARCHITECTURE §9c). Overwrites any previous control message from us — one slot per author,
+     * latest-wins — so a cancel genuinely supersedes the request it withdraws.
+     *
+     * `recipients` is normally a single friend's receiving key: a live request addressed to one
+     * person should be readable by exactly that person. Passing an empty list writes an envelope
+     * nobody can open, which is a no-op in practice but not an error here.
+     *
+     * The envelope's `seq` is fixed at 0 — control entries have no history for it to order, and
+     * replay identity lives in the payload's `nonce`/`ts` instead.
+     */
+open func docsWriteControl(msg: ControlMsg, recipients: [Data])async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_iroh_location_fn_method_locationnode_docs_write_control(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeControlMsg_lower(msg),FfiConverterSequenceData.lower(recipients)
                 )
             },
             pollFunc: ffi_iroh_location_rust_future_poll_void,
@@ -1961,6 +2013,30 @@ open func pushTrailTraced(peerTicket: String?, traceparent: String)async throws 
             completeFunc: ffi_iroh_location_rust_future_complete_void,
             freeFunc: ffi_iroh_location_rust_future_free_void,
             liftFunc: { $0 },
+            errorHandler: FfiConverterTypeLocationError_lift
+        )
+}
+    
+    /**
+     * Read `author`'s current control message, if we can open it. Returns an empty vec when
+     * there is none, when it is addressed to someone else, or when the content has not
+     * replicated locally yet — all indistinguishable and all "nothing to act on".
+     *
+     * Callers MUST still check freshness and dedupe by `nonce`; see [`ControlMsg`].
+     */
+open func readControl(author: Data)async throws  -> [ControlMsg]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_iroh_location_fn_method_locationnode_read_control(
+                    self.uniffiCloneHandle(),
+                    FfiConverterData.lower(author)
+                )
+            },
+            pollFunc: ffi_iroh_location_rust_future_poll_rust_buffer,
+            completeFunc: ffi_iroh_location_rust_future_complete_rust_buffer,
+            freeFunc: ffi_iroh_location_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeControlMsg.lift,
             errorHandler: FfiConverterTypeLocationError_lift
         )
 }
@@ -2752,6 +2828,113 @@ public func FfiConverterTypeBumpResolution_lift(_ buf: RustBuffer) throws -> Bum
 #endif
 public func FfiConverterTypeBumpResolution_lower(_ value: BumpResolution) -> RustBuffer {
     return FfiConverterTypeBumpResolution.lower(value)
+}
+
+
+/**
+ * A **control** message — the live-mode request channel (ARCHITECTURE §9c).
+ *
+ * Sealed with the exact same envelope machinery as a [`LocationFix`] and written to the sender's
+ * own trail namespace under a `ctl/` key, so it is opaque to the stash and to every pool member
+ * it is not wrapped for. Deliberately carries no location.
+ *
+ * `ts` + `nonce` are the replay defence, and they matter: the control key is overwritten in
+ * place, so a malicious replica could withhold an update and keep serving a stale request. The
+ * receiver MUST reject messages outside a freshness window and MUST dedupe by `nonce`.
+ */
+public struct ControlMsg: Equatable, Hashable {
+    /**
+     * Wire version of this payload (currently 1).
+     */
+    public var v: UInt8
+    /**
+     * One of `CTL_KIND_*`.
+     */
+    public var kind: UInt8
+    /**
+     * When the sender created it (ms since epoch) — the freshness anchor.
+     */
+    public var ts: UInt64
+    /**
+     * Requested live window in ms; the receiver clamps it and is always free to refuse.
+     */
+    public var ttlMs: UInt32
+    /**
+     * 16 random bytes giving this message a stable identity for dedup.
+     */
+    public var nonce: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Wire version of this payload (currently 1).
+         */v: UInt8, 
+        /**
+         * One of `CTL_KIND_*`.
+         */kind: UInt8, 
+        /**
+         * When the sender created it (ms since epoch) — the freshness anchor.
+         */ts: UInt64, 
+        /**
+         * Requested live window in ms; the receiver clamps it and is always free to refuse.
+         */ttlMs: UInt32, 
+        /**
+         * 16 random bytes giving this message a stable identity for dedup.
+         */nonce: Data) {
+        self.v = v
+        self.kind = kind
+        self.ts = ts
+        self.ttlMs = ttlMs
+        self.nonce = nonce
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ControlMsg: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeControlMsg: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ControlMsg {
+        return
+            try ControlMsg(
+                v: FfiConverterUInt8.read(from: &buf), 
+                kind: FfiConverterUInt8.read(from: &buf), 
+                ts: FfiConverterUInt64.read(from: &buf), 
+                ttlMs: FfiConverterUInt32.read(from: &buf), 
+                nonce: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ControlMsg, into buf: inout [UInt8]) {
+        FfiConverterUInt8.write(value.v, into: &buf)
+        FfiConverterUInt8.write(value.kind, into: &buf)
+        FfiConverterUInt64.write(value.ts, into: &buf)
+        FfiConverterUInt32.write(value.ttlMs, into: &buf)
+        FfiConverterData.write(value.nonce, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeControlMsg_lift(_ buf: RustBuffer) throws -> ControlMsg {
+    return try FfiConverterTypeControlMsg.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeControlMsg_lower(_ value: ControlMsg) -> RustBuffer {
+    return FfiConverterTypeControlMsg.lower(value)
 }
 
 
@@ -4336,6 +4519,31 @@ fileprivate struct FfiConverterSequenceTypeBlePeer: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeControlMsg: FfiConverterRustBuffer {
+    typealias SwiftType = [ControlMsg]
+
+    public static func write(_ value: [ControlMsg], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeControlMsg.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ControlMsg] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ControlMsg]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeControlMsg.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeIncomingFix: FfiConverterRustBuffer {
     typealias SwiftType = [IncomingFix]
 
@@ -4720,6 +4928,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_iroh_location_checksum_method_locationnode_docs_write() != 8784) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_iroh_location_checksum_method_locationnode_docs_write_control() != 23232) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_iroh_location_checksum_method_locationnode_docs_write_inner() != 3042) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -4790,6 +5001,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_iroh_location_checksum_method_locationnode_push_trail_traced() != 27419) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_iroh_location_checksum_method_locationnode_read_control() != 32699) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_iroh_location_checksum_method_locationnode_read_profile() != 28632) {

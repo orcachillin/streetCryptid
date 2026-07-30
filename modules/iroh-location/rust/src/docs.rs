@@ -151,6 +151,9 @@ pub fn author_prefix(author: &[u8]) -> Vec<u8> {
 }
 
 /// Decode a key produced by [`encode_key`] back into `(author_bytes, seq)`.
+///
+/// Returns `None` for a control key (see [`encode_ctl_key`]): those lead with the literal `ctl`,
+/// which is not valid hex, so every existing fix-reading call site skips them without change.
 pub fn decode_key(key: &[u8]) -> Option<(Vec<u8>, u64)> {
     let pos = key.iter().position(|&b| b == KEY_SEP)?;
     let author_hex = std::str::from_utf8(&key[..pos]).ok()?;
@@ -161,6 +164,35 @@ pub fn decode_key(key: &[u8]) -> Option<(Vec<u8>, u64)> {
         .ok()?;
     Some((author, seq))
 }
+
+/// Literal leading segment marking a **control** entry rather than a location fix.
+///
+/// Control entries (live-mode requests — ARCHITECTURE §9c) are written to the author's OWN
+/// namespace next to their fixes, but must never be mistaken for one. The `ctl` lead gives that
+/// for free in both directions: [`author_prefix`] range queries cannot match a key starting with
+/// `ctl/`, and [`decode_key`] rejects `"ctl"` as a hex author. Chosen deliberately over a
+/// `hex(author)/ctl/seq` layout, which WOULD match the fix prefix and force every reader to
+/// filter.
+pub const CTL_TAG: &str = "ctl";
+
+/// Encode a control entry key as `ctl/hex(author)` — deliberately **one slot per author**.
+///
+/// Unlike fixes, control entries carry no history: re-writing the key supersedes the previous
+/// message, so the replica holds exactly one per author forever rather than accumulating a row
+/// per live-mode request that every poll would then re-read and the stash would replicate for
+/// good. Latest-wins is also the right semantics — "I want to watch you now" and "cancel" both
+/// describe the current intent, so a superseded request is never one we wanted to act on.
+/// Replay/dedup identity lives in the payload's nonce + ts, not in the key.
+pub fn encode_ctl_key(author: &[u8]) -> Vec<u8> {
+    let mut key = CTL_TAG.as_bytes().to_vec();
+    key.push(KEY_SEP);
+    key.extend_from_slice(hex_encode(author).as_bytes());
+    key
+}
+
+// No `decode_ctl_key`: control entries are fetched by exact key (see `TrailDocs::read_ctl`), so
+// nothing needs the inverse. The invariant that matters — that fix readers cannot see these keys
+// — is asserted in `fix_readers_ignore_control_keys` below.
 
 /// Range test: a fix at `fix_ts` is surfaced iff `fix_ts >= since_ts`
 /// (`since_ts == 0` ⇒ full history).
@@ -335,6 +367,58 @@ impl TrailDocs {
                         payload: opened.payload,
                     });
                 }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Write a sealed **control** envelope to `ns` under `ctl/hex(author)` (ARCHITECTURE §9c).
+    ///
+    /// Same sealing as a fix — the payload is a `ControlMsg`, not a `LocationFix`, and is wrapped
+    /// only for the recipient it addresses, so the stash and every other pool member see opaque
+    /// bytes. Writers use their OWN namespace: a user is the sole writer of their trail, and the
+    /// recipient already replicates it, so this needs no new grant or transport.
+    pub async fn write_ctl(
+        &self,
+        ns: NamespaceId,
+        author: &[u8],
+        envelope: Vec<u8>,
+    ) -> Result<()> {
+        let doc = self.doc_for(ns).await?;
+        doc.set_bytes(self.author, encode_ctl_key(author), envelope)
+            .await?;
+        Ok(())
+    }
+
+    /// Read + decrypt `author`'s current control entry across **every** known namespace.
+    ///
+    /// Returns at most one payload per namespace holding one (normally exactly one, in the
+    /// author's own namespace). Entries we cannot open are skipped — a control message addressed
+    /// to someone else is indistinguishable from noise, by design. No `since_ts` filtering here:
+    /// the payload is a `ControlMsg`, so freshness is the caller's to judge after decoding.
+    pub async fn read_ctl(&self, author: &[u8], recv_secret: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let namespaces: Vec<NamespaceId> = {
+            let handles = self.handles.lock().await;
+            handles.keys().map(|b| NamespaceId::from(*b)).collect()
+        };
+        let key = encode_ctl_key(author);
+        let mut out = Vec::new();
+        for ns in namespaces {
+            let doc = self.doc_for(ns).await?;
+            // `single_latest_per_key` is load-bearing: the control key is overwritten in place, so
+            // superseded versions still exist in the replica and a plain query would resurrect a
+            // cancelled request. Same shape as `profile::read_latest`.
+            let query = Query::single_latest_per_key().key_exact(key.clone()).build();
+            let entry = match doc.get_one(query).await? {
+                Some(e) => e,
+                None => continue,
+            };
+            let bytes = match self.blobs.blobs().get_bytes(entry.content_hash()).await {
+                Ok(b) => b,
+                Err(_) => continue, // content not yet available locally
+            };
+            if let Ok(opened) = crypto::open(recv_secret, &bytes) {
+                out.push(opened.payload);
             }
         }
         Ok(out)
@@ -726,6 +810,30 @@ mod tests {
     fn decode_key_rejects_garbage() {
         assert!(decode_key(b"no-separator-here").is_none());
         assert!(decode_key(b"zz/00000000000000000001").is_none()); // non-hex author
+    }
+
+    // ── control-entry keys (ARCHITECTURE §9c) ────────────────────────────────────────────
+
+    /// The whole point of the `ctl/` lead: fix readers must skip control entries untouched.
+    /// If this ever fails, control payloads start reaching `read_range` and the trail UI, which
+    /// would try to decode a `ControlMsg` as a `LocationFix`.
+    #[test]
+    fn fix_readers_ignore_control_keys() {
+        let author = [0x11u8; 32];
+        let ctl = encode_ctl_key(&author);
+        // `decode_key` refuses it, so `read_range` / `sync` / the trail UI drop it on the floor.
+        assert!(decode_key(&ctl).is_none());
+        // ...and a fix-prefix range query cannot even reach it.
+        assert!(!ctl.starts_with(&author_prefix(&author)));
+    }
+
+    /// One slot per author: the key must not vary, or superseding would not work.
+    #[test]
+    fn ctl_key_is_stable_per_author() {
+        let a = [3u8; 32];
+        let b = [4u8; 32];
+        assert_eq!(encode_ctl_key(&a), encode_ctl_key(&a));
+        assert_ne!(encode_ctl_key(&a), encode_ctl_key(&b));
     }
 
     // ── prune-threshold selection ────────────────────────────────────────────────────────

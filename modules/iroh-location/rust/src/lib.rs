@@ -132,6 +132,35 @@ pub struct LocationFix {
     pub ts: u64,
 }
 
+/// Control message kind. Not a uniffi enum: the wire carries a plain `u8` so an unknown future
+/// kind decodes cleanly and is ignored by an older peer rather than failing the whole payload.
+pub const CTL_KIND_LIVE_REQUEST: u8 = 1;
+/// Withdraw an outstanding live request (see [`CTL_KIND_LIVE_REQUEST`]).
+pub const CTL_KIND_LIVE_CANCEL: u8 = 2;
+
+/// A **control** message — the live-mode request channel (ARCHITECTURE §9c).
+///
+/// Sealed with the exact same envelope machinery as a [`LocationFix`] and written to the sender's
+/// own trail namespace under a `ctl/` key, so it is opaque to the stash and to every pool member
+/// it is not wrapped for. Deliberately carries no location.
+///
+/// `ts` + `nonce` are the replay defence, and they matter: the control key is overwritten in
+/// place, so a malicious replica could withhold an update and keep serving a stale request. The
+/// receiver MUST reject messages outside a freshness window and MUST dedupe by `nonce`.
+#[derive(Debug, Clone, uniffi::Record, serde::Serialize, serde::Deserialize)]
+pub struct ControlMsg {
+    /// Wire version of this payload (currently 1).
+    pub v: u8,
+    /// One of `CTL_KIND_*`.
+    pub kind: u8,
+    /// When the sender created it (ms since epoch) — the freshness anchor.
+    pub ts: u64,
+    /// Requested live window in ms; the receiver clamps it and is always free to refuse.
+    pub ttl_ms: u32,
+    /// 16 random bytes giving this message a stable identity for dedup.
+    pub nonce: Vec<u8>,
+}
+
 /// A decrypted fix read back from the durable replica (mirrors the TS `NativeIncomingFix`).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct IncomingFix {
@@ -907,6 +936,81 @@ impl LocationNode {
         }
         .instrument(span)
         .await
+    }
+
+    /// Seal `msg` for `recipients` and write it to our own namespace's control slot
+    /// (ARCHITECTURE §9c). Overwrites any previous control message from us — one slot per author,
+    /// latest-wins — so a cancel genuinely supersedes the request it withdraws.
+    ///
+    /// `recipients` is normally a single friend's receiving key: a live request addressed to one
+    /// person should be readable by exactly that person. Passing an empty list writes an envelope
+    /// nobody can open, which is a no-op in practice but not an error here.
+    ///
+    /// The envelope's `seq` is fixed at 0 — control entries have no history for it to order, and
+    /// replay identity lives in the payload's `nonce`/`ts` instead.
+    pub async fn docs_write_control(
+        &self,
+        msg: ControlMsg,
+        recipients: Vec<Vec<u8>>,
+    ) -> Result<(), LocationError> {
+        use tracing::Instrument;
+        let span = tracing::info_span!(
+            "ctl.write",
+            sc.author = %telemetry::short_hex(&self.author),
+            ctl.kind = msg.kind,
+            recipients = recipients.len(),
+            sc.entry_hash = tracing::field::Empty,
+        );
+        async move {
+            let guard = self.inner.lock().await;
+            let started = guard.as_ref().ok_or(LocationError::NotStarted)?;
+            let payload = postcard::to_allocvec(&msg)
+                .map_err(|_| LocationError::Decode("encode control".into()))?;
+            let envelope = crypto::seal(
+                &self.identity_seed,
+                &self.author,
+                0,
+                msg.ts,
+                0,
+                &payload,
+                &recipients,
+            )?;
+            tracing::Span::current().record(
+                "sc.entry_hash",
+                tracing::field::display(telemetry::envelope_hash(&envelope)),
+            );
+            let ns = started.trail.own_namespace();
+            started
+                .trail
+                .write_ctl(ns, &self.author, envelope)
+                .await
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "control write failed");
+                    LocationError::Network(e.to_string())
+                })?;
+            Ok(())
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Read `author`'s current control message, if we can open it. Returns an empty vec when
+    /// there is none, when it is addressed to someone else, or when the content has not
+    /// replicated locally yet — all indistinguishable and all "nothing to act on".
+    ///
+    /// Callers MUST still check freshness and dedupe by `nonce`; see [`ControlMsg`].
+    pub async fn read_control(&self, author: Vec<u8>) -> Result<Vec<ControlMsg>, LocationError> {
+        let guard = self.inner.lock().await;
+        let started = guard.as_ref().ok_or(LocationError::NotStarted)?;
+        let payloads = started
+            .trail
+            .read_ctl(&author, &self.recv_secret)
+            .await
+            .map_err(|e| LocationError::Network(e.to_string()))?;
+        Ok(payloads
+            .iter()
+            .filter_map(|p| postcard::from_bytes::<ControlMsg>(p).ok())
+            .collect())
     }
 
     /// Kick off range-based set reconciliation across our own + imported friend namespaces to
