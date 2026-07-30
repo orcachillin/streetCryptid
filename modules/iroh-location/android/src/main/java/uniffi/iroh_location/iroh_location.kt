@@ -725,6 +725,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_iroh_location_checksum_method_locationnode_docs_write(
     ): Int
+    external fun uniffi_iroh_location_checksum_method_locationnode_docs_write_control(
+    ): Int
     external fun uniffi_iroh_location_checksum_method_locationnode_docs_write_inner(
     ): Int
     external fun uniffi_iroh_location_checksum_method_locationnode_docs_write_traced(
@@ -772,6 +774,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_iroh_location_checksum_method_locationnode_push_trail_inner(
     ): Int
     external fun uniffi_iroh_location_checksum_method_locationnode_push_trail_traced(
+    ): Int
+    external fun uniffi_iroh_location_checksum_method_locationnode_read_control(
     ): Int
     external fun uniffi_iroh_location_checksum_method_locationnode_read_profile(
     ): Int
@@ -868,6 +872,8 @@ external fun uniffi_iroh_location_fn_method_locationnode_doc_ticket(`ptr`: Long,
 ): Long
 external fun uniffi_iroh_location_fn_method_locationnode_docs_write(`ptr`: Long,`subscriptionId`: RustBuffer.ByValue,`seq`: Long,`epoch`: Int,`fix`: RustBuffer.ByValue,`recipients`: RustBuffer.ByValue,
 ): Long
+external fun uniffi_iroh_location_fn_method_locationnode_docs_write_control(`ptr`: Long,`msg`: RustBuffer.ByValue,`recipients`: RustBuffer.ByValue,
+): Long
 external fun uniffi_iroh_location_fn_method_locationnode_docs_write_inner(`ptr`: Long,`subscriptionId`: RustBuffer.ByValue,`seq`: Long,`epoch`: Int,`fix`: RustBuffer.ByValue,`recipients`: RustBuffer.ByValue,`traceparent`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_iroh_location_fn_method_locationnode_docs_write_traced(`ptr`: Long,`subscriptionId`: RustBuffer.ByValue,`seq`: Long,`epoch`: Int,`fix`: RustBuffer.ByValue,`recipients`: RustBuffer.ByValue,`traceparent`: RustBuffer.ByValue,
@@ -915,6 +921,8 @@ external fun uniffi_iroh_location_fn_method_locationnode_push_trail(`ptr`: Long,
 external fun uniffi_iroh_location_fn_method_locationnode_push_trail_inner(`ptr`: Long,`peerTicket`: RustBuffer.ByValue,`traceparent`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_iroh_location_fn_method_locationnode_push_trail_traced(`ptr`: Long,`peerTicket`: RustBuffer.ByValue,`traceparent`: RustBuffer.ByValue,
+): Long
+external fun uniffi_iroh_location_fn_method_locationnode_read_control(`ptr`: Long,`author`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_iroh_location_fn_method_locationnode_read_profile(`ptr`: Long,`endpointId`: RustBuffer.ByValue,
 ): Long
@@ -1158,6 +1166,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_iroh_location_checksum_method_locationnode_docs_write() != 8784) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_iroh_location_checksum_method_locationnode_docs_write_control() != 23232) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_iroh_location_checksum_method_locationnode_docs_write_inner() != 3042) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1228,6 +1239,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_iroh_location_checksum_method_locationnode_push_trail_traced() != 27419) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_iroh_location_checksum_method_locationnode_read_control() != 32699) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_iroh_location_checksum_method_locationnode_read_profile() != 28632) {
@@ -2314,6 +2328,20 @@ public interface LocationNodeInterface {
      */
     suspend fun `docsWrite`(`subscriptionId`: kotlin.String, `seq`: kotlin.ULong, `epoch`: kotlin.UInt, `fix`: LocationFix, `recipients`: List<kotlin.ByteArray>)
     
+    /**
+     * Seal `msg` for `recipients` and write it to our own namespace's control slot
+     * (ARCHITECTURE §9c). Overwrites any previous control message from us — one slot per author,
+     * latest-wins — so a cancel genuinely supersedes the request it withdraws.
+     *
+     * `recipients` is normally a single friend's receiving key: a live request addressed to one
+     * person should be readable by exactly that person. Passing an empty list writes an envelope
+     * nobody can open, which is a no-op in practice but not an error here.
+     *
+     * The envelope's `seq` is fixed at 0 — control entries have no history for it to order, and
+     * replay identity lives in the payload's `nonce`/`ts` instead.
+     */
+    suspend fun `docsWriteControl`(`msg`: ControlMsg, `recipients`: List<kotlin.ByteArray>)
+    
     suspend fun `docsWriteInner`(`subscriptionId`: kotlin.String, `seq`: kotlin.ULong, `epoch`: kotlin.UInt, `fix`: LocationFix, `recipients`: List<kotlin.ByteArray>, `traceparent`: kotlin.String?)
     
     suspend fun `docsWriteTraced`(`subscriptionId`: kotlin.String, `seq`: kotlin.ULong, `epoch`: kotlin.UInt, `fix`: LocationFix, `recipients`: List<kotlin.ByteArray>, `traceparent`: kotlin.String)
@@ -2457,6 +2485,15 @@ public interface LocationNodeInterface {
     suspend fun `pushTrailInner`(`peerTicket`: kotlin.String?, `traceparent`: kotlin.String?)
     
     suspend fun `pushTrailTraced`(`peerTicket`: kotlin.String?, `traceparent`: kotlin.String)
+    
+    /**
+     * Read `author`'s current control message, if we can open it. Returns an empty vec when
+     * there is none, when it is addressed to someone else, or when the content has not
+     * replicated locally yet — all indistinguishable and all "nothing to act on".
+     *
+     * Callers MUST still check freshness and dedupe by `nonce`; see [`ControlMsg`].
+     */
+    suspend fun `readControl`(`author`: kotlin.ByteArray): List<ControlMsg>
     
     /**
      * Read the newest verified profile for `endpoint_id` (self or a friend) from the local
@@ -2857,6 +2894,40 @@ open class LocationNode: Disposable, AutoCloseable, LocationNodeInterface
             UniffiLib.uniffi_iroh_location_fn_method_locationnode_docs_write(
                 uniffiHandle,
                 FfiConverterString.lower(`subscriptionId`),FfiConverterULong.lower(`seq`),FfiConverterUInt.lower(`epoch`),FfiConverterTypeLocationFix.lower(`fix`),FfiConverterSequenceByteArray.lower(`recipients`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_iroh_location_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_iroh_location_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_iroh_location_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        LocationException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Seal `msg` for `recipients` and write it to our own namespace's control slot
+     * (ARCHITECTURE §9c). Overwrites any previous control message from us — one slot per author,
+     * latest-wins — so a cancel genuinely supersedes the request it withdraws.
+     *
+     * `recipients` is normally a single friend's receiving key: a live request addressed to one
+     * person should be readable by exactly that person. Passing an empty list writes an envelope
+     * nobody can open, which is a no-op in practice but not an error here.
+     *
+     * The envelope's `seq` is fixed at 0 — control entries have no history for it to order, and
+     * replay identity lives in the payload's `nonce`/`ts` instead.
+     */
+    @Throws(LocationException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `docsWriteControl`(`msg`: ControlMsg, `recipients`: List<kotlin.ByteArray>) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_iroh_location_fn_method_locationnode_docs_write_control(
+                uniffiHandle,
+                FfiConverterTypeControlMsg.lower(`msg`),FfiConverterSequenceByteArray.lower(`recipients`),
             )
         },
         { future, callback, continuation -> UniffiLib.ffi_iroh_location_rust_future_poll_void(future, callback, continuation) },
@@ -3445,6 +3516,34 @@ open class LocationNode: Disposable, AutoCloseable, LocationNodeInterface
         // lift function
         { Unit },
         
+        // Error FFI converter
+        LocationException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Read `author`'s current control message, if we can open it. Returns an empty vec when
+     * there is none, when it is addressed to someone else, or when the content has not
+     * replicated locally yet — all indistinguishable and all "nothing to act on".
+     *
+     * Callers MUST still check freshness and dedupe by `nonce`; see [`ControlMsg`].
+     */
+    @Throws(LocationException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `readControl`(`author`: kotlin.ByteArray) : List<ControlMsg> {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_iroh_location_fn_method_locationnode_read_control(
+                uniffiHandle,
+                FfiConverterByteArray.lower(`author`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_iroh_location_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_iroh_location_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.ffi_iroh_location_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterSequenceTypeControlMsg.lift(it) },
         // Error FFI converter
         LocationException.ErrorHandler,
     )
@@ -4388,6 +4487,85 @@ public object FfiConverterTypeBumpResolution: FfiConverterRustBuffer<BumpResolut
             FfiConverterOptionalShort.write(value.`rssi`, buf)
             FfiConverterUInt.write(value.`peerCount`, buf)
             FfiConverterString.write(value.`detail`, buf)
+    }
+}
+
+
+
+/**
+ * A **control** message — the live-mode request channel (ARCHITECTURE §9c).
+ *
+ * Sealed with the exact same envelope machinery as a [`LocationFix`] and written to the sender's
+ * own trail namespace under a `ctl/` key, so it is opaque to the stash and to every pool member
+ * it is not wrapped for. Deliberately carries no location.
+ *
+ * `ts` + `nonce` are the replay defence, and they matter: the control key is overwritten in
+ * place, so a malicious replica could withhold an update and keep serving a stale request. The
+ * receiver MUST reject messages outside a freshness window and MUST dedupe by `nonce`.
+ */
+data class ControlMsg (
+    /**
+     * Wire version of this payload (currently 1).
+     */
+    var `v`: kotlin.UByte
+    , 
+    /**
+     * One of `CTL_KIND_*`.
+     */
+    var `kind`: kotlin.UByte
+    , 
+    /**
+     * When the sender created it (ms since epoch) — the freshness anchor.
+     */
+    var `ts`: kotlin.ULong
+    , 
+    /**
+     * Requested live window in ms; the receiver clamps it and is always free to refuse.
+     */
+    var `ttlMs`: kotlin.UInt
+    , 
+    /**
+     * 16 random bytes giving this message a stable identity for dedup.
+     */
+    var `nonce`: kotlin.ByteArray
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeControlMsg: FfiConverterRustBuffer<ControlMsg> {
+    override fun read(buf: ByteBuffer): ControlMsg {
+        return ControlMsg(
+            FfiConverterUByte.read(buf),
+            FfiConverterUByte.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterByteArray.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ControlMsg) = (
+            FfiConverterUByte.allocationSize(value.`v`) +
+            FfiConverterUByte.allocationSize(value.`kind`) +
+            FfiConverterULong.allocationSize(value.`ts`) +
+            FfiConverterUInt.allocationSize(value.`ttlMs`) +
+            FfiConverterByteArray.allocationSize(value.`nonce`)
+    )
+
+    override fun write(value: ControlMsg, buf: ByteBuffer) {
+            FfiConverterUByte.write(value.`v`, buf)
+            FfiConverterUByte.write(value.`kind`, buf)
+            FfiConverterULong.write(value.`ts`, buf)
+            FfiConverterUInt.write(value.`ttlMs`, buf)
+            FfiConverterByteArray.write(value.`nonce`, buf)
     }
 }
 
@@ -5733,6 +5911,34 @@ public object FfiConverterSequenceTypeBlePeer: FfiConverterRustBuffer<List<BlePe
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeBlePeer.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeControlMsg: FfiConverterRustBuffer<List<ControlMsg>> {
+    override fun read(buf: ByteBuffer): List<ControlMsg> {
+        val len = buf.getInt()
+        return List<ControlMsg>(len) {
+            FfiConverterTypeControlMsg.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<ControlMsg>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeControlMsg.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<ControlMsg>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeControlMsg.write(it, buf)
         }
     }
 }

@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import uniffi.iroh_location.BleCapabilities
 import uniffi.iroh_location.BlePeer
 import uniffi.iroh_location.BumpResolution
+import uniffi.iroh_location.ControlMsg
 import uniffi.iroh_location.FixListener
 import uniffi.iroh_location.IncomingFix
 import uniffi.iroh_location.LocationFix
