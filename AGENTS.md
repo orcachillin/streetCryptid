@@ -38,6 +38,15 @@ Conventions when changing that code:
   telemetry to `otlp.junephilip.com` from real users' devices, which must be disclosed in the
   privacy policy or stripped before the first public submission. Strip the `env` block from
   `production` in `eas.json` to revert.
+- **Do not add a battery-optimisation prompt to "fix" Android background reliability without
+  re-checking this first.** Android already restores sharing on its own: expo-task-manager's
+  `TaskBroadcastReceiver` is registered for `BOOT_COMPLETED` (and `RECEIVE_BOOT_COMPLETED` is
+  declared in `app.json`), its `TaskService` constructor calls `restoreTasks()`, and
+  `LocationTaskConsumer.didRegister` restarts location updates — `location` is not one of the FGS
+  types Android 15 bars from a boot receiver. Process kills are covered by `LocationTaskService`
+  returning `START_REDELIVER_INTENT`. `ensureSharingArmedHeadless` is only a backstop there, and a
+  `fgs-start-blocked` on a `backfill` trigger is expected, not a bug. iOS has neither mechanism,
+  which is why `revive-task.ts` exists.
 - Headless background code that records telemetry must flush before returning
   (`getTelemetry().flush()` / `flushDevTelemetry()`), or the OS freezes the process with the
   batch unexported.

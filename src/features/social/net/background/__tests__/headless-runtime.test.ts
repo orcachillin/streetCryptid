@@ -1,6 +1,10 @@
 import { AppState } from 'react-native';
 
-import { flushBackgroundOutboxHeadless, runBackgroundBackfillHeadless } from '../headless-runtime';
+import {
+  ensureSharingArmedHeadless,
+  flushBackgroundOutboxHeadless,
+  runBackgroundBackfillHeadless,
+} from '../headless-runtime';
 import { registerActiveBackfillHandler } from '../register-task';
 
 // The headless session news up a real LocationSharingService (→ native iroh `createNode`). Mock it so
@@ -42,6 +46,30 @@ jest.mock('../background-outbox', () => ({
     pending: jest.fn(async () => 0),
     drain: jest.fn(async () => 0),
   },
+}));
+
+// The self-heal touches only the OS location task — no iroh node — so it is mocked at that seam.
+const mockIsRunning = jest.fn(async () => false);
+const mockStartBackgroundLocation = jest.fn(async (_cfg: unknown) => {});
+// Spread the real module: `register-task` is pulled in transitively and needs the rest of it
+// (`isBackgroundLocationAvailable`, `defineBackgroundLocationTask`) at import time.
+jest.mock('../background-task', () => ({
+  ...jest.requireActual('../background-task'),
+  isBackgroundLocationRunning: () => mockIsRunning(),
+  startBackgroundLocation: (cfg: unknown) => mockStartBackgroundLocation(cfg),
+}));
+
+const mockLoadSharingEnabled = jest.fn(async () => true);
+jest.mock('../../persistence', () => ({
+  createPersistentKV: jest.fn(() => ({})),
+  loadSharingEnabled: () => mockLoadSharingEnabled(),
+  loadShareIntervalMs: jest.fn(async () => 300_000),
+}));
+
+jest.mock('../battery-source', () => ({
+  createBatterySource: jest.fn(() => ({
+    read: jest.fn(async () => ({ level: 1, charging: false, lowPower: false })),
+  })),
 }));
 
 function setAppState(state: string): void {
@@ -176,6 +204,59 @@ describe('headless-runtime', () => {
       await flushBackgroundOutboxHeadless();
 
       expect(mockPushTrail).not.toHaveBeenCalled();
+    });
+  });
+
+  // The self-heal is what turns a woken-but-dark phone back on. Its failure mode is silent by
+  // nature — nothing publishes and nothing throws — so the guards are worth pinning down.
+  describe('ensureSharingArmedHeadless', () => {
+    beforeEach(() => {
+      mockLoadSharingEnabled.mockImplementation(async () => true);
+      mockIsRunning.mockImplementation(async () => false);
+      mockStartBackgroundLocation.mockImplementation(async (_cfg: unknown) => {});
+    });
+
+    it('re-arms when sharing is enabled but the OS task is not running', async () => {
+      await expect(ensureSharingArmedHeadless('geofence')).resolves.toBe(true);
+      expect(mockStartBackgroundLocation).toHaveBeenCalledTimes(1);
+      // Ambient cadence, never live: resurrecting a 4s cadence unattended is how the original
+      // failure compounds instead of ending.
+      expect(mockStartBackgroundLocation.mock.calls[0][0]).toMatchObject({
+        timeIntervalMs: 300_000,
+        distanceIntervalM: 0,
+      });
+    });
+
+    it('does nothing when the user has sharing switched off', async () => {
+      mockLoadSharingEnabled.mockImplementation(async () => false);
+
+      await expect(ensureSharingArmedHeadless('backfill')).resolves.toBe(false);
+      expect(mockStartBackgroundLocation).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when the platform already restored the task itself', async () => {
+      // Android's BOOT_COMPLETED receiver and START_REDELIVER_INTENT both land here.
+      mockIsRunning.mockImplementation(async () => true);
+
+      await expect(ensureSharingArmedHeadless('backfill')).resolves.toBe(false);
+      expect(mockStartBackgroundLocation).not.toHaveBeenCalled();
+    });
+
+    it('swallows the Android background-FGS refusal instead of failing its caller', async () => {
+      mockStartBackgroundLocation.mockImplementation(async (_cfg: unknown) => {
+        throw new Error('ForegroundServiceStartNotAllowedException: startForegroundService()');
+      });
+
+      // Expected on a backfill wake, and must not reject — the caller still has real work to do.
+      await expect(ensureSharingArmedHeadless('backfill')).resolves.toBe(false);
+    });
+
+    it('swallows an unexpected failure too', async () => {
+      mockStartBackgroundLocation.mockImplementation(async (_cfg: unknown) => {
+        throw new Error('location provider unavailable');
+      });
+
+      await expect(ensureSharingArmedHeadless('geofence')).resolves.toBe(false);
     });
   });
 });

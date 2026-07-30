@@ -1,4 +1,4 @@
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 import { getTelemetry, type SpanContext } from '@/features/dev/telemetry';
 import { createCryptidProfileStore } from '@/features/account/storage/profile-store';
@@ -62,15 +62,36 @@ function runHeadless<T>(opts: HeadlessSession<T>): Promise<T> {
   return result;
 }
 
+/** What woke us. Recorded on the span, because the trigger decides whether we are even allowed. */
+export type SelfHealTrigger = 'backfill' | 'geofence';
+
 /**
  * Re-arm OS background location updates if the user wants sharing on but the OS task is not running.
  *
  * This is the self-heal, and it exists because the ordinary re-arm path is unreachable from here:
  * `rearmBackgroundLocationTask` is only called via `startBackground`, which is driven by a React
- * hook, so it needs the UI to mount. A phone that was terminated (jetsam, a crash, a reboot) can
- * therefore be woken repeatedly — for a backfill, for a geofence exit — sync happily, and still
- * never restart its own location reporting. That is exactly what kept an iPhone dark for hours after
- * a live-mode test killed it.
+ * hook, so it needs the UI to mount. A phone that was terminated can therefore be woken repeatedly —
+ * for a backfill, for a geofence exit — sync happily, and still never restart its own location
+ * reporting. That is exactly what kept an iPhone dark for hours after a live-mode test killed it.
+ *
+ * ## It is a safety net, not the primary mechanism — especially on Android
+ * Both platforms already restore sharing on their own in the common cases, and this must not be
+ * mistaken for what is holding them up:
+ *  - **Android reboot** is handled by expo-task-manager's `TaskBroadcastReceiver`, which is
+ *    registered for `BOOT_COMPLETED`; constructing its `TaskService` calls `restoreTasks()`, which
+ *    re-registers the persisted location task, and `LocationTaskConsumer.didRegister` restarts
+ *    location updates. `RECEIVE_BOOT_COMPLETED` is declared in `app.json`, and `location` is not one
+ *    of the FGS types Android 15 bars from a `BOOT_COMPLETED` receiver. This path needs nothing
+ *    from us.
+ *  - **Android process kill** is handled by `LocationTaskService` returning `START_REDELIVER_INTENT`
+ *    — the system restarts the service unaided.
+ *  - **iOS** has no equivalent of either, which is why the geofence tripwire exists there.
+ *
+ * So on Android this only covers the residue: sharing enabled in our own persisted state while the
+ * OS task is somehow not running. It is still worth attempting — if the user has turned off battery
+ * optimisation it simply succeeds — but a `fgs-start-blocked` here is an expected outcome on a
+ * `backfill` trigger, not an alarm. From a `geofence` trigger it should succeed, because a geofence
+ * transition is on Android's exemption list for starting a foreground service from the background.
  *
  * Deliberately NOT wrapped in {@link runHeadless}: it touches only the OS location task, needs no
  * iroh node, and so cannot trip the `createNode → clearRuntime` singleton hazard described above.
@@ -78,12 +99,20 @@ function runHeadless<T>(opts: HeadlessSession<T>): Promise<T> {
  *
  * @returns true when it actually re-armed (for telemetry/tests), false when nothing was needed.
  */
-export async function ensureSharingArmedHeadless(parent?: SpanContext): Promise<boolean> {
+export async function ensureSharingArmedHeadless(
+  trigger: SelfHealTrigger,
+  parent?: SpanContext
+): Promise<boolean> {
   const kv = createPersistentKV();
   if (!(await loadSharingEnabled(kv))) return false;
+  // Not a fallback for the platform's own restore — if the OS already brought the task back (boot
+  // receiver, START_REDELIVER_INTENT), there is nothing to do and nothing to report.
   if (await isBackgroundLocationRunning()) return false;
 
-  const span = getTelemetry().startSpan('bg.selfheal', { parent });
+  const span = getTelemetry().startSpan('bg.selfheal', {
+    parent,
+    attributes: { trigger, platform: Platform.OS },
+  });
   try {
     const policy = createSamplingPolicy({ intervalMs: await loadShareIntervalMs(kv) });
     // Ambient cadence only. A self-heal never restores live mode: the watcher's window has almost
@@ -102,15 +131,19 @@ export async function ensureSharingArmedHeadless(parent?: SpanContext): Promise<
     return true;
   } catch (err) {
     // Android 12+ forbids starting a foreground service from the background, and
-    // `startLocationUpdatesAsync` starts one. When that is why we failed, retrying on the next wake
-    // will fail identically — the user has to bring the app forward — so name it rather than
-    // burying it in a generic error. Never rethrow: a failed self-heal must not fail its caller,
-    // which is usually a backfill that still has real work to do.
+    // `startLocationUpdatesAsync` starts one. Distinguish it from a genuine failure: on a `backfill`
+    // trigger this is the documented, expected outcome and the platform's own restore paths (boot
+    // receiver, START_REDELIVER_INTENT) are what actually cover that case. On a `geofence` trigger
+    // it is NOT expected — a geofence transition is on Android's exemption list — so seeing it there
+    // means the exemption is not applying and is worth investigating. Never rethrow: a failed
+    // self-heal must not fail its caller, which is usually a backfill with real work still to do.
     const message = err instanceof Error ? err.message : String(err);
     const blocked = /ForegroundServiceStartNotAllowed|not allowed to start service/i.test(message);
     span.setAttribute('sc.drop_reason', blocked ? 'fgs-start-blocked' : 'selfheal-failed');
     span.recordError(err);
-    console.warn('[background-location] self-heal re-arm failed', err);
+    if (!blocked || trigger === 'geofence') {
+      console.warn('[background-location] self-heal re-arm failed', err);
+    }
     return false;
   } finally {
     span.end();
@@ -151,10 +184,11 @@ export function runBackgroundBackfillHeadless(parent?: SpanContext): Promise<voi
   // and the `session()` guard alone would let us spin up a SECOND node here — whose `createNode`
   // calls `clearRuntime()` and tears the live node's subscriptions down, silently killing outgoing
   // publishes and live receive until relaunch. Route the backfill to the live runtime instead.
-  // Self-heal BEFORE anything else, and regardless of whether a runtime is mounted. This periodic
-  // wake is Android's resurrection path (WorkManager survives reboot), and on iOS it is the one
-  // regular opportunity to notice that the location task died with a previous process.
-  void ensureSharingArmedHeadless(parent);
+  // Self-heal BEFORE anything else, and regardless of whether a runtime is mounted. On iOS this
+  // periodic wake is a regular opportunity to notice that the location task died with a previous
+  // process. On Android it is only a backstop — boot and process-kill are already covered by the
+  // platform (see `ensureSharingArmedHeadless`) — and is expected to be refused when it does fire.
+  void ensureSharingArmedHeadless('backfill', parent);
 
   const runMounted = getActiveBackfillHandler();
   if (runMounted) return runMounted(parent);

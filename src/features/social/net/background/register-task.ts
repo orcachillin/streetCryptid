@@ -95,7 +95,7 @@ if (isReviveFenceAvailable()) {
   // now so it keeps following the user.
   defineReviveTask(async (parent) => {
     const { ensureSharingArmedHeadless } = await import('./headless-runtime');
-    await ensureSharingArmedHeadless(parent);
+    await ensureSharingArmedHeadless('geofence', parent);
     try {
       const { armReviveFence } = await import('./revive-task');
       const Location = await import('expo-location');
