@@ -110,6 +110,16 @@ jest.mock('expo-secure-store', () => ({
   setItemAsync: async () => {},
 }));
 
+// ...and that has to include SQLite, or the fallback above never actually happens: `persistence.ts`
+// opens a REAL database when expo-sqlite resolves, so these tests were sharing one on-disk DB and
+// carrying `sc.social.*` state between runs. Failing the open is the supported route to the
+// in-memory stores — see `getDb`.
+jest.mock('expo-sqlite', () => ({
+  openDatabaseAsync: async () => {
+    throw new Error('SQLite is deliberately unavailable in this suite');
+  },
+}));
+
 // The watcher lifecycle installs an AppState listener in `init`. Spy on the real one to capture it:
 // spreading `requireActual('react-native')` eagerly evaluates every getter in the RN index (DevMenu,
 // FlatList, ...) and blows up under jest-expo, so a module mock is not an option here.

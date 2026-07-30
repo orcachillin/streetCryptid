@@ -100,6 +100,11 @@ export function createOtlpExporter(options: ExporterOptions): OtlpExporter {
       timer = null;
       void flush();
     }, flushIntervalMs);
+    // Never let a pending batch hold the process open. On device this is a no-op (Hermes has no
+    // `unref`), but under Node — jest — a live exporter that recorded even one span would otherwise
+    // keep the run alive for the whole flush interval after the tests finished. Same idiom as every
+    // timer in `location-sharing.ts`.
+    (timer as unknown as { unref?: () => void }).unref?.();
   }
 
   function spanPayload(batch: FinishedSpan[]): string {
