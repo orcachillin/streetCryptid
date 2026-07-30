@@ -90,7 +90,10 @@ describe('createSamplingPolicy', () => {
     const d = createSamplingPolicy().decide({ battery: lowPower, live: true });
     expect(d.timeIntervalMs).toBe(4_000);
     expect(d.accuracy).toBe('high');
-    expect(d.distanceIntervalM).toBe(5);
+    // 25 m, not 5 m: `timeIntervalMs` above is Android-only, so on iOS this filter alone paced live
+    // mode and a car tripped it about once a second. The engine's `liveMinPublishMs` is the real
+    // bound now; this just stops the OS waking us for movement no map dot could show.
+    expect(d.distanceIntervalM).toBe(25);
     expect(d.active).toBe(true);
   });
 

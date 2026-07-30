@@ -336,6 +336,28 @@ export async function saveShareIntervalMs(kv: PersistentKV, intervalMs: number):
   await kv.set(SHARE_INTERVAL_KEY, String(intervalMs));
 }
 
+const SHARING_ENABLED_KEY = 'sc.social.sharingEnabled';
+
+/**
+ * Whether the user has background sharing switched ON — the *intent*, not the current OS state.
+ *
+ * The distinction is the point. If the app is terminated (jetsam, a crash, a reboot) the OS location
+ * task dies with it and nothing in-process survives to notice; a headless wake can then compare this
+ * flag against `isBackgroundLocationRunning()` and re-arm. Without a persisted intent there is no
+ * way to tell "sharing is off because the user turned it off" from "sharing is off because we were
+ * killed", and the self-heal would either never fire or would resurrect sharing the user disabled.
+ *
+ * Defaults to false: an install that has never enabled sharing must never have it started for it.
+ */
+export async function loadSharingEnabled(kv: PersistentKV): Promise<boolean> {
+  return (await kv.get(SHARING_ENABLED_KEY)) === '1';
+}
+
+/** Persist the background-sharing intent. Written by `startBackground` / `stopBackground`. */
+export async function saveSharingEnabled(kv: PersistentKV, enabled: boolean): Promise<void> {
+  await kv.set(SHARING_ENABLED_KEY, enabled ? '1' : '0');
+}
+
 const RELAY_ONLY_KEY = 'sc.social.relayOnly';
 const TRANSPORT_CONFIG_KEY = 'sc.social.transportConfig';
 

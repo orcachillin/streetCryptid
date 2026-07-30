@@ -76,13 +76,15 @@ import {
   saveHandledNonces,
   savePool,
   saveShareIntervalMs,
+  saveSharingEnabled,
   saveStashOptIn,
   saveTransportPreferences,
   SHARE_INTERVAL_OPTIONS_MS,
   type TransportPreferences,
   DEFAULT_TRANSPORT_PREFERENCES,
 } from './persistence';
-import { DEFAULT_SHARE_INTERVAL_MS } from './background/sampling-policy';
+import { createAppLifecycleController } from './background/lifecycle';
+import { DEFAULT_SAMPLING_CONFIG, DEFAULT_SHARE_INTERVAL_MS } from './background/sampling-policy';
 import { createDefaultStashClient, type StashClient } from './stash-client';
 import {
   activeWatchers,
@@ -263,6 +265,21 @@ const PAIRING_POLL_INTERVAL_MS = 4000;
  */
 const LIVE_REQUEST_POLL_INTERVAL_MS = 5 * 60_000;
 
+/**
+ * How often a WATCHER pulls the trail while it has a live session running.
+ *
+ * The subject's live cadence is worth nothing if we only reconcile when something else happens to
+ * trigger a sync. Gossip delivers live fixes when the direct link is carrying, but that is exactly
+ * what fails when a friend is far away behind a relay — and then the entire live window lands in one
+ * batch on the next unrelated `syncTrail`.
+ *
+ * Deliberately faster than the subject's `liveMinPublishMs` so we never sit on a published fix, and
+ * deliberately foreground-only: the user is looking at the screen, and a background watcher has no
+ * one to show it to. Unlike the poll above this IS request-driven traffic, but it is bounded by the
+ * live TTL and only runs when the user explicitly asked to watch someone.
+ */
+const LIVE_WATCH_PULL_INTERVAL_MS = 8_000;
+
 const BUMP_POLL_INTERVAL_MS = 300;
 const BUMP_RESOLVE_TIMEOUT_MS = 12_000;
 export const BUMP_WINDOW_MS = 15_000;
@@ -393,6 +410,20 @@ export class LocationSharingService implements FixPublisher {
   private handledNonces: HandledNonce[] = [];
   /** Nonce of the outstanding request WE sent per friend, so we can cancel it later. */
   private readonly sentRequestNonces = new Map<string, string>();
+  /**
+   * Live sessions WE are watching, by friend endpoint id → absolute expiry. The watcher-side mirror
+   * of {@link watcherSessions}, which tracks who is watching us.
+   *
+   * Needed because live mode used to be entirely send-side: the subject sped up, but nothing on this
+   * end pulled any faster, so a watcher whose gossip link was not carrying (the normal case when the
+   * friend is far away and behind a relay) saw nothing at all until some unrelated `syncTrail` fired
+   * and delivered the whole window at once.
+   */
+  private readonly watchingSessions = new Map<string, number>();
+  private liveWatchPullTimer: ReturnType<typeof setInterval> | null = null;
+  private liveWatchPullInFlight: Promise<void> | null = null;
+  /** Cleans up outstanding live requests when we stop being able to watch (app backgrounded). */
+  private watcherLifecycleStop: (() => void) | null = null;
   /** Injectable CSPRNG for control nonces; tests supply a deterministic one. */
   private readonly randomBytes: RandomBytesFn;
   /**
@@ -604,6 +635,7 @@ export class LocationSharingService implements FixPublisher {
       await this.syncStashGrants();
       this.startPairingPolling();
       await this.pollPairingOnce();
+      this.startWatcherLifecycle();
     }
     this.setStatus('ready');
   }
@@ -1427,7 +1459,6 @@ export class LocationSharingService implements FixPublisher {
         { createLocationEngine },
         { createSamplingPolicy },
         { BackgroundLocationProvider: Provider },
-        { createAppLifecycleController },
         { backgroundOutbox, registerActiveBackgroundFixHandler, registerActiveBackfillHandler },
         { createBatterySource },
         { createCadenceController, cfgFromDecision },
@@ -1435,7 +1466,6 @@ export class LocationSharingService implements FixPublisher {
         import('./background/location-engine'),
         import('./background/sampling-policy'),
         import('./background/background-provider'),
-        import('./background/lifecycle'),
         import('./background/register-task'),
         import('./background/battery-source'),
         import('./background/cadence-controller'),
@@ -1515,10 +1545,7 @@ export class LocationSharingService implements FixPublisher {
 
       // Emit on every slot boundary even when the OS delivers no fixes (a phone sitting on a desk).
       // Cheap: it republishes a position we already have and no-ops when the slot is covered.
-      this.heartbeatTimer = setInterval(() => {
-        void this.engine?.heartbeat();
-      }, this.shareIntervalMs);
-      (this.heartbeatTimer as unknown as { unref?: () => void }).unref?.();
+      this.armHeartbeat(this.shareIntervalMs);
 
       // Live-mode requests are only actionable while we are actually sampling, so the poll's
       // lifetime is background sharing's (§9c). Sharing off ⇒ nothing to make live ⇒ nothing to poll.
@@ -1528,6 +1555,15 @@ export class LocationSharingService implements FixPublisher {
         onForeground: () => {
           void this.engine?.flush();
           void this.syncTrail(0);
+          // Re-center the revive fence on wherever we are now. A stale fence still works (being far
+          // outside it only makes the exit fire sooner), but keeping it current stops a user who
+          // never leaves a 200 m radius from having a tripwire they can't trip.
+          const fix = this.engine?.getState().lastAcceptedFix;
+          if (fix) {
+            void import('./background/revive-task')
+              .then(({ armReviveFence }) => armReviveFence(fix))
+              .catch(() => undefined);
+          }
         },
         onBackground: () => {
           // OS keep-alive (Android foreground service / iOS background location) covers this.
@@ -1546,6 +1582,20 @@ export class LocationSharingService implements FixPublisher {
         if (isBackgroundBackfillAvailable()) await scheduleBackgroundBackfill();
       } catch (error) {
         console.warn('[background-backfill] schedule failed', error);
+      }
+
+      // Record the INTENT last, once everything is actually up. A headless wake compares this against
+      // the live OS state to decide whether we were killed and should re-arm — see
+      // `ensureSharingArmedHeadless`. Writing it earlier would let a start that then threw leave
+      // behind an intent the self-heal would keep trying to honour.
+      await saveSharingEnabled(this.kv, true);
+      // Arm the iOS revive fence around where we are now. This is the only mechanism that relaunches
+      // a terminated iOS app; on Android it is a no-op (WorkManager covers that case).
+      try {
+        const { armReviveFence } = await import('./background/revive-task');
+        await armReviveFence(firstFix);
+      } catch (error) {
+        console.warn('[revive-fence] arm failed', error);
       }
 
       this.emit();
@@ -1574,18 +1624,43 @@ export class LocationSharingService implements FixPublisher {
     this.shareIntervalMs = intervalMs;
     await saveShareIntervalMs(this.kv, intervalMs);
     await this.engine?.setIntervalMs(intervalMs);
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = setInterval(() => {
-        void this.engine?.heartbeat();
-      }, intervalMs);
-      (this.heartbeatTimer as unknown as { unref?: () => void }).unref?.();
-    }
+    if (this.heartbeatTimer) this.armHeartbeat(intervalMs);
     this.emit();
+  }
+
+  /**
+   * (Re)arm the heartbeat timer at `intervalMs`. Replaces any running timer, so it is safe to call
+   * on every cadence change.
+   *
+   * The interval is not always the share interval: live mode needs its own, much shorter, tick.
+   * With live mode's 25 m OS distance filter a stationary phone is delivered no fixes at all, so
+   * the live keepalive can only come from a timer — and a 5-minute one cannot deliver a 30-second
+   * keepalive. See `LocationEngine.heartbeat`.
+   */
+  private armHeartbeat(intervalMs: number): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = setInterval(() => {
+      void this.engine?.heartbeat();
+    }, intervalMs);
+    (this.heartbeatTimer as unknown as { unref?: () => void }).unref?.();
   }
 
   /** Stop the background location service (leaves queued fixes in the outbox). Idempotent. */
   async stopBackground(): Promise<void> {
+    // Clear the intent FIRST, and unconditionally. If this ran at the end, an exception partway
+    // through teardown would leave the flag set and the next headless wake would dutifully re-arm
+    // sharing the user just switched off.
+    try {
+      await saveSharingEnabled(this.kv, false);
+    } catch {
+      // ignore — a KV failure must not block teardown
+    }
+    try {
+      const { disarmReviveFence } = await import('./background/revive-task');
+      await disarmReviveFence();
+    } catch {
+      // ignore — best-effort; the fence is inert once the intent flag is clear
+    }
     if (this.liveTrackingTimer) {
       clearTimeout(this.liveTrackingTimer);
       this.liveTrackingTimer = null;
@@ -1653,10 +1728,17 @@ export class LocationSharingService implements FixPublisher {
       this.liveTrackingTimer = null;
     }
     await this.engine?.setLiveMode(on);
+    // The heartbeat carries live mode's keepalive, and the share interval is far too slow for it.
+    // Only touch the timer when one is actually running — live tracking is a no-op until the
+    // background service has started, and arming a heartbeat here would resurrect a stopped one.
+    if (this.heartbeatTimer) {
+      this.armHeartbeat(on ? DEFAULT_SAMPLING_CONFIG.liveMaxQuietMs : this.shareIntervalMs);
+    }
     if (on && ttlMs > 0) {
       const timer = setTimeout(() => {
         this.liveTrackingTimer = null;
         void this.engine?.setLiveMode(false);
+        if (this.heartbeatTimer) this.armHeartbeat(this.shareIntervalMs);
         // Sessions have lapsed by construction; drop them so the UI stops claiming we are live.
         this.watcherSessions = activeWatchers(this.watcherSessions, Date.now());
         this.emit();
@@ -1700,6 +1782,11 @@ export class LocationSharingService implements FixPublisher {
       // reconciling at the same moment, which is exactly what the stash exists to stop relying on.
       await this.pushTrail(span.context);
       this.sentRequestNonces.set(endpointId, nonce);
+      // Start pulling immediately. The subject won't speed up until its next poll (up to
+      // LIVE_REQUEST_POLL_INTERVAL_MS away), but its ambient fixes still need collecting in the
+      // meantime, and this way the window is covered end to end rather than from first-arrival.
+      this.watchingSessions.set(endpointId, Date.now() + clampLiveTtl(ttlMs));
+      this.startLiveWatchPull();
       span.setStatus('ok');
       this.emit();
     } catch (err) {
@@ -1726,7 +1813,83 @@ export class LocationSharingService implements FixPublisher {
       /* best-effort — the window lapses on its own regardless */
     }
     this.sentRequestNonces.delete(endpointId);
+    this.watchingSessions.delete(endpointId);
+    this.stopLiveWatchPullIfIdle();
     this.emit();
+  }
+
+  /**
+   * Withdraw every outstanding live request we sent. Called when we background: a watcher who is not
+   * looking at the screen has no use for a friend's real-time GPS, and leaving the request standing
+   * would keep their phone at the live cadence for the rest of the TTL for nobody's benefit.
+   *
+   * Best-effort and inherently racy against process death — if we are *killed* rather than
+   * backgrounded, nothing is sent and the subject's TTL is the only thing that stops it. That is why
+   * the TTL remains the real bound, and why a cancel that fails here is not worth surfacing.
+   */
+  private async cancelAllLiveRequests(): Promise<void> {
+    const outstanding = [...this.sentRequestNonces.keys()];
+    if (outstanding.length === 0) return;
+    await Promise.allSettled(outstanding.map((id) => this.cancelLiveRequest(id)));
+  }
+
+  /**
+   * Watch app state for the WATCHER half of live mode (§9c). Deliberately separate from the
+   * lifecycle controller `startBackground` installs: watching and sharing are independent — you can
+   * watch a friend without sharing your own location — so tying this to the background service
+   * would leave requests uncancelled for exactly the users who never turned sharing on.
+   */
+  private startWatcherLifecycle(): void {
+    if (this.watcherLifecycleStop) return;
+    this.watcherLifecycleStop = createAppLifecycleController({
+      onForeground: () => {
+        // Nothing to resume: a live window the user walked away from is over, by design. They ask
+        // again if they still want it.
+      },
+      onBackground: () => {
+        void this.cancelAllLiveRequests();
+        this.watchingSessions.clear();
+        this.stopLiveWatchPullIfIdle();
+      },
+    }).start();
+  }
+
+  /**
+   * Run the watcher-side pull while any live session is active. Idempotent — safe to call on every
+   * request.
+   */
+  private startLiveWatchPull(): void {
+    if (this.liveWatchPullTimer) return;
+    this.liveWatchPullTimer = setInterval(() => {
+      void this.runLiveWatchPull();
+    }, LIVE_WATCH_PULL_INTERVAL_MS);
+    (this.liveWatchPullTimer as unknown as { unref?: () => void }).unref?.();
+  }
+
+  /** Stop the pull once no live session remains, so it can never outlive the windows it serves. */
+  private stopLiveWatchPullIfIdle(): void {
+    const now = Date.now();
+    for (const [id, expiresAt] of this.watchingSessions) {
+      if (expiresAt <= now) this.watchingSessions.delete(id);
+    }
+    if (this.watchingSessions.size > 0 || !this.liveWatchPullTimer) return;
+    clearInterval(this.liveWatchPullTimer);
+    this.liveWatchPullTimer = null;
+  }
+
+  /** One pull tick. Serialized: a slow reconciliation must not overlap the next tick. */
+  private async runLiveWatchPull(): Promise<void> {
+    this.stopLiveWatchPullIfIdle();
+    if (this.watchingSessions.size === 0) return;
+    if (this.liveWatchPullInFlight) return this.liveWatchPullInFlight;
+    this.liveWatchPullInFlight = this.syncTrail(0)
+      .catch(() => {
+        /* a missed tick is recovered by the next one — never surface transient sync failures */
+      })
+      .finally(() => {
+        this.liveWatchPullInFlight = null;
+      });
+    return this.liveWatchPullInFlight;
   }
 
   /** Stop `endpointId`'s live session immediately (the user's "stop" action). */
@@ -1866,6 +2029,13 @@ export class LocationSharingService implements FixPublisher {
     this.stopPairingPolling();
     this.stopBumpPolling();
     this.stopLiveRequestPolling();
+    this.watcherLifecycleStop?.();
+    this.watcherLifecycleStop = null;
+    this.watchingSessions.clear();
+    if (this.liveWatchPullTimer) {
+      clearInterval(this.liveWatchPullTimer);
+      this.liveWatchPullTimer = null;
+    }
     if (this.liveTrackingTimer) {
       clearTimeout(this.liveTrackingTimer);
       this.liveTrackingTimer = null;
