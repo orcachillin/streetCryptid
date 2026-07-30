@@ -47,7 +47,14 @@ export const LIVE_REQUEST_CLOCK_SKEW_MS = 60_000;
  * bounds live mode in place of a prompt, so an attacker-chosen `ttlMs` must never be honoured. */
 export const LIVE_TTL_MIN_MS = 60_000;
 export const LIVE_TTL_MAX_MS = 30 * 60_000;
-export const LIVE_TTL_DEFAULT_MS = 15 * 60_000;
+/**
+ * 5 minutes, not 15. The TTL is the only bound that survives the watcher's process dying, and a
+ * watcher that backgrounds now withdraws its request explicitly — so the default no longer has to
+ * cover the ordinary "walked away" case, only the ones where nothing could be sent. Shorter default,
+ * smaller blast radius when a live session is left running by accident; a watcher who genuinely
+ * wants longer can still ask for up to {@link LIVE_TTL_MAX_MS}.
+ */
+export const LIVE_TTL_DEFAULT_MS = 5 * 60_000;
 
 /** Injectable random-byte source; mirrors `RandomBytesFn` in `core/pairing-code.ts`. */
 export type RandomBytesFn = (byteCount: number) => Promise<Uint8Array>;

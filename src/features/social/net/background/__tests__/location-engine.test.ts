@@ -514,31 +514,108 @@ describe('location engine', () => {
       expect(publisher.published).toHaveLength(1 + MAX_BACKFILL_MS / SLOT);
     });
 
-    it('does nothing in live mode, which publishes per fix instead', async () => {
+    it('does not re-grid the slot heartbeat in live mode', async () => {
       const { publisher, clock, engine } = harness({ ready: true });
       await engine.start();
       clock.t = 0;
       await engine.ingest(fix(0));
       await engine.setLiveMode(true);
 
+      // One live keepalive, not a slot's worth of backfill.
       clock.t = SLOT;
+      expect(await engine.heartbeat()).toBe(1);
+      expect(publisher.published).toHaveLength(2);
+    });
+
+    it('carries the live keepalive at most once per liveMaxQuietMs', async () => {
+      const { publisher, clock, engine } = harness({ ready: true });
+      await engine.start();
+      clock.t = 0;
+      await engine.ingest(fix(0));
+      await engine.setLiveMode(true);
+
+      clock.t = 1_000;
+      expect(await engine.heartbeat()).toBe(1);
+      // Well inside the quiet window — nothing to say yet.
+      clock.t = 5_000;
       expect(await engine.heartbeat()).toBe(0);
-      expect(publisher.published).toHaveLength(1);
+      clock.t = 31_000;
+      expect(await engine.heartbeat()).toBe(1);
+      expect(publisher.published).toHaveLength(3);
     });
   });
 
   describe('live mode', () => {
-    it('publishes every fix while live', async () => {
+    it('rate-limits publishing however fast the OS delivers fixes', async () => {
+      // The regression this gate exists for. `timeInterval` is Android-only, so on iOS the sole OS
+      // gate was the distance filter; a car tripped it about once a second and live mode published
+      // every one of them — 78 envelopes in 74 seconds — until the app was killed under the load.
       const { publisher, clock, engine } = harness({ ready: true });
       await engine.start();
       await engine.setLiveMode(true);
 
-      for (const offset of [0, 4_000, 8_000]) {
-        clock.t = offset;
-        await engine.ingest(fix(offset));
+      // 60 s of driving at 20 m/s, delivered once a second: 61 fixes in.
+      for (let t = 0; t <= 60_000; t += 1_000) {
+        clock.t = t;
+        await engine.ingest(north(t, (t / 1_000) * 20));
       }
 
-      expect(publisher.published).toHaveLength(3);
+      // Out: one per 4 s window. The old behaviour published all 61.
+      expect(publisher.published.length).toBeLessThanOrEqual(60_000 / 4_000 + 1);
+      expect(publisher.published.length).toBeGreaterThanOrEqual(10);
+    });
+
+    it('suppresses fixes that have barely moved', async () => {
+      const { publisher, clock, engine } = harness({ ready: true });
+      await engine.start();
+      await engine.setLiveMode(true);
+
+      clock.t = 0;
+      await engine.ingest(north(0, 0));
+      expect(publisher.published).toHaveLength(1);
+
+      // Past the rate floor, but 10 m along — a correction no map dot can show.
+      clock.t = 10_000;
+      await engine.ingest(north(10_000, 10));
+      expect(publisher.published).toHaveLength(1);
+
+      // 30 m clears liveMinDistanceM.
+      clock.t = 20_000;
+      await engine.ingest(north(20_000, 30));
+      expect(publisher.published).toHaveLength(2);
+    });
+
+    it('still publishes a stationary phone, so stopped never looks like dead', async () => {
+      const { publisher, clock, engine } = harness({ ready: true });
+      await engine.start();
+      await engine.setLiveMode(true);
+
+      clock.t = 0;
+      await engine.ingest(north(0, 0));
+      clock.t = 10_000;
+      await engine.ingest(north(10_000, 0));
+      expect(publisher.published).toHaveLength(1);
+
+      // Past liveMaxQuietMs the last position goes out regardless of movement.
+      clock.t = 30_000;
+      await engine.ingest(north(30_000, 0));
+      expect(publisher.published).toHaveLength(2);
+    });
+
+    it('publishes the first fix of a session immediately', async () => {
+      const { publisher, clock, engine } = harness({ ready: true });
+      await engine.start();
+
+      // A live session that follows an earlier one must not be gated against the old one's state.
+      await engine.setLiveMode(true);
+      clock.t = 0;
+      await engine.ingest(north(0, 0));
+      await engine.setLiveMode(false);
+      await engine.setLiveMode(true);
+
+      clock.t = 1_000;
+      await engine.ingest(north(1_000, 1));
+      expect(publisher.published).toHaveLength(2);
     });
 
     it('re-anchors the slot grid on exit so it does not backfill the live window', async () => {

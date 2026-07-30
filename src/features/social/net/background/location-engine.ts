@@ -1,4 +1,5 @@
 import { getTelemetry, type SpanContext } from '@/features/dev/telemetry';
+import { distanceBetweenFixes } from '../../core/presence';
 import type { LocationFix } from '../../core/types';
 import {
   assessFix,
@@ -181,9 +182,41 @@ export function createLocationEngine(opts: LocationEngineOptions): LocationEngin
   /** Index of the last wall-clock slot we put an envelope on the wire for; null before the first. */
   let lastPublishedSlot: number | null = null;
   let live = false;
+  /** The last fix live mode actually put on the wire, and when — the live gate's whole state. */
+  let lastLivePublishFix: LocationFix | null = null;
+  let lastLivePublishAt: number | null = null;
   const listeners = new Set<(s: EngineState) => void>();
 
   const slotOf = (ts: number, intervalMs: number): number => Math.floor(ts / intervalMs);
+
+  /**
+   * Whether a live-mode fix earns a publish, and why not when it doesn't.
+   *
+   * Live mode bypasses the slot grid by design, which left it with no rate limit at all on iOS —
+   * `timeInterval` is Android-only, so `liveDistanceM` was the only gate and a moving car tripped it
+   * ~once a second. This is the replacement, and it lives here rather than in the OS request
+   * precisely because only this side is honoured on both platforms.
+   */
+  function liveGate(
+    fix: LocationFix,
+    at: number
+  ): 'publish' | 'live-rate-limited' | 'live-stationary' {
+    if (lastLivePublishFix === null || lastLivePublishAt === null) return 'publish';
+    const sinceMs = at - lastLivePublishAt;
+    // The floor is absolute: nothing, however far it moved, publishes twice inside one window.
+    if (sinceMs < policy.config.liveMinPublishMs) return 'live-rate-limited';
+    if (distanceBetweenFixes(lastLivePublishFix, fix) >= policy.config.liveMinDistanceM) {
+      return 'publish';
+    }
+    // Barely moved — but a live watcher must still see a heartbeat, or a parked friend looks dead.
+    return sinceMs >= policy.config.liveMaxQuietMs ? 'publish' : 'live-stationary';
+  }
+
+  /** Record a live publish so the gate can measure the next one against it. */
+  function markLivePublish(fix: LocationFix, at: number): void {
+    lastLivePublishFix = fix;
+    lastLivePublishAt = at;
+  }
 
   function emit(): void {
     const snapshot = getState();
@@ -345,8 +378,19 @@ export function createLocationEngine(opts: LocationEngineOptions): LocationEngin
           } else if (live) {
             // Real-time mode bypasses the slot grid by design: the user has explicitly traded the
             // uniform cadence for responsiveness, for a bounded window. It does NOT bypass the
-            // confidence gate — a friend watching in real time least of all wants junk.
-            if (rejection === null) await outbox.enqueue(fix, span.context);
+            // confidence gate — a friend watching in real time least of all wants junk — and since
+            // the grid is gone, `liveGate` is the only thing bounding the publish rate. Losing that
+            // bound is what let a driving iPhone publish at ~1 Hz until it was killed.
+            if (rejection === null) {
+              const verdict = liveGate(fix, now());
+              span.setAttribute('live.gate', verdict);
+              if (verdict === 'publish') {
+                await outbox.enqueue(fix, span.context);
+                markLivePublish(fix, now());
+              } else {
+                span.setAttribute('sc.drop_reason', verdict);
+              }
+            }
           } else {
             const published = await enqueueDueSlots(span.context);
             span.setAttribute('slots_published', published);
@@ -374,8 +418,30 @@ export function createLocationEngine(opts: LocationEngineOptions): LocationEngin
     },
 
     async heartbeat(parent?: SpanContext): Promise<number> {
-      // Live mode publishes per fix, so it needs no heartbeat and must not be re-gridded by one.
-      if (state.status !== 'running' || live) return 0;
+      if (state.status !== 'running') return 0;
+      // Live mode must not be re-gridded by the slot heartbeat — but it still needs a heartbeat of
+      // its own. With a 25 m OS distance filter a stationary phone is delivered no fixes at all, so
+      // without this a parked friend would simply stop transmitting and read as a dead phone.
+      if (live) {
+        const decision = policy.decide({ battery: await battery(), live });
+        setState({ decision });
+        if (!decision.active || lastKnownFix === null) return 0;
+        const at = now();
+        if (lastLivePublishAt !== null && at - lastLivePublishAt < policy.config.liveMaxQuietMs) {
+          return 0;
+        }
+        try {
+          await outbox.enqueue(lastKnownFix, parent);
+          markLivePublish(lastKnownFix, at);
+          if (publisher.isReady()) await flush(parent);
+          setState({ pending: await outbox.pending() });
+          return 1;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setState({ status: 'error', error: message });
+          return 0;
+        }
+      }
       const decision = policy.decide({ battery: await battery(), live });
       setState({ decision });
       if (!decision.active) return 0;
@@ -416,6 +482,13 @@ export function createLocationEngine(opts: LocationEngineOptions): LocationEngin
       // Leaving live mode re-anchors the grid: while live we published per fix and left
       // lastPublishedSlot behind, so resuming would otherwise backfill every slot since.
       if (was && !on) lastPublishedSlot = slotOf(now(), policy.config.intervalMs);
+      // Clear the live gate on every transition. Entering, so the first fix of a session goes out
+      // immediately instead of waiting out a floor measured against some previous session; leaving,
+      // so stale state cannot suppress the first fix of the next one.
+      if (was !== on) {
+        lastLivePublishFix = null;
+        lastLivePublishAt = null;
+      }
       const decision = policy.decide({ battery: await battery(), live });
       setState({ decision });
       return decision;

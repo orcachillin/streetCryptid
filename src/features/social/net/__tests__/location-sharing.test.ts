@@ -1,3 +1,5 @@
+import { AppState } from 'react-native';
+
 import type { ContactCard, IncomingFix } from '../../core/types';
 import {
   createTelemetry,
@@ -21,6 +23,7 @@ class FakeNativeModule {
     importDocTicket: [] as string[],
     subscribe: [] as { topic: string; bootstrap: string[] }[],
     unsubscribe: [] as string[],
+    docsWriteControl: [] as unknown[][],
   };
   private handlers: Record<string, (e: unknown) => void> = {};
   readonly unsubscribeFailures = new Set<string>();
@@ -57,6 +60,9 @@ class FakeNativeModule {
   }
   async docsWrite(...args: unknown[]) {
     this.calls.docsWrite.push(args);
+  }
+  async docsWriteControl(...args: unknown[]) {
+    this.calls.docsWriteControl.push(args);
   }
   async syncTrail(since: number, peerTicket: string | null, traceparent?: string | null) {
     this.calls.syncTrail.push({
@@ -103,6 +109,26 @@ jest.mock('expo-secure-store', () => ({
   getItemAsync: async () => null,
   setItemAsync: async () => {},
 }));
+
+// ...and that has to include SQLite, or the fallback above never actually happens: `persistence.ts`
+// opens a REAL database when expo-sqlite resolves, so these tests were sharing one on-disk DB and
+// carrying `sc.social.*` state between runs. Failing the open is the supported route to the
+// in-memory stores — see `getDb`.
+jest.mock('expo-sqlite', () => ({
+  openDatabaseAsync: async () => {
+    throw new Error('SQLite is deliberately unavailable in this suite');
+  },
+}));
+
+// The watcher lifecycle installs an AppState listener in `init`. Spy on the real one to capture it:
+// spreading `requireActual('react-native')` eagerly evaluates every getter in the RN index (DevMenu,
+// FlatList, ...) and blows up under jest-expo, so a module mock is not an option here.
+const appStateListeners = new Set<(s: string) => void>();
+
+/** Drive an AppState transition through every listener the service installed. */
+function emitAppState(next: string): void {
+  for (const cb of [...appStateListeners]) cb(next);
+}
 
 // eslint-disable-next-line import/first
 import { LocationSharingService, type SharingSnapshot } from '../location-sharing';
@@ -459,5 +485,145 @@ describe('LocationSharingService — durable trail wiring', () => {
 
       expect(latest()?.shareIntervalMs).toBe(300_000);
     });
+  });
+});
+
+/**
+ * The WATCHER half of live mode. Live mode used to be entirely send-side: the subject sped up, but
+ * nothing on this end pulled any faster, so a watcher whose gossip link was not carrying — the
+ * normal case for a distant friend behind a relay — saw the whole window arrive in one batch on
+ * some later unrelated sync. These cover the pull loop and, just as importantly, that it can never
+ * outlive the session it serves.
+ */
+describe('LocationSharingService — live watch pull', () => {
+  beforeEach(() => {
+    mockHolder.mod = new FakeNativeModule();
+    mockHolder.stashConfig = null;
+    setTelemetryForTesting(undefined);
+    appStateListeners.clear();
+    jest.spyOn(AppState, 'addEventListener').mockImplementation(((
+      _event: string,
+      cb: (state: string) => void
+    ) => {
+      appStateListeners.add(cb);
+      return { remove: () => appStateListeners.delete(cb) };
+    }) as unknown as typeof AppState.addEventListener);
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  /** A service with a friend added and sharing on, ready to be asked to watch. */
+  async function watching(): Promise<LocationSharingService> {
+    const svc = makeService({ randomBytes: async (n: number) => new Uint8Array(n).fill(7) });
+    await svc.init('@me', 'mothman');
+    await svc.addFriend(friend);
+    await svc.shareWith(friend.endpointId);
+    return svc;
+  }
+
+  /** syncTrail calls since a mark, ignoring the ones add/share themselves trigger. */
+  function syncsSince(svc: LocationSharingService, mark: number): number {
+    void svc;
+    return mockHolder.mod.calls.syncTrail.length - mark;
+  }
+
+  it('pulls the trail on an interval while a live session is active', async () => {
+    const svc = await watching();
+    await svc.requestLive(friend.endpointId, 5 * 60_000);
+    const mark = mockHolder.mod.calls.syncTrail.length;
+
+    await jest.advanceTimersByTimeAsync(8_000);
+    expect(syncsSince(svc, mark)).toBe(1);
+
+    await jest.advanceTimersByTimeAsync(24_000);
+    expect(syncsSince(svc, mark)).toBe(4);
+  });
+
+  it('writes the request into our own namespace rather than uploading anything', async () => {
+    const svc = await watching();
+    await svc.requestLive(friend.endpointId, 5 * 60_000);
+
+    // Wrapped for exactly one recipient: nobody else, including the stash, can tell a request was
+    // sent, let alone to whom.
+    expect(mockHolder.mod.calls.docsWriteControl).toHaveLength(1);
+    expect(mockHolder.mod.calls.docsWriteControl[0][1]).toEqual([friend.recvPublic]);
+  });
+
+  it('stops pulling when the request is withdrawn', async () => {
+    const svc = await watching();
+    await svc.requestLive(friend.endpointId, 5 * 60_000);
+    await jest.advanceTimersByTimeAsync(8_000);
+
+    await svc.cancelLiveRequest(friend.endpointId);
+    const mark = mockHolder.mod.calls.syncTrail.length;
+
+    await jest.advanceTimersByTimeAsync(40_000);
+    expect(syncsSince(svc, mark)).toBe(0);
+  });
+
+  it('stops pulling once the window it was serving has lapsed', async () => {
+    const svc = await watching();
+    // Clamped up to LIVE_TTL_MIN_MS (60s), so the session expires a minute in.
+    await svc.requestLive(friend.endpointId, 1_000);
+
+    await jest.advanceTimersByTimeAsync(8_000);
+    const beforeExpiry = mockHolder.mod.calls.syncTrail.length;
+    expect(beforeExpiry).toBeGreaterThan(0);
+
+    await jest.advanceTimersByTimeAsync(70_000);
+    const afterExpiry = mockHolder.mod.calls.syncTrail.length;
+
+    // A lapsed session must not keep a timer alive behind it.
+    await jest.advanceTimersByTimeAsync(40_000);
+    expect(mockHolder.mod.calls.syncTrail.length).toBe(afterExpiry);
+  });
+
+  // Backgrounding withdraws the ask: a watcher not looking at the screen has no use for a friend's
+  // real-time GPS, and leaving it standing keeps their phone at the live cadence for the whole TTL.
+  it('withdraws the request and stops pulling when the app is backgrounded', async () => {
+    const svc = await watching();
+    await svc.requestLive(friend.endpointId, 5 * 60_000);
+    await jest.advanceTimersByTimeAsync(8_000);
+
+    emitAppState('background');
+    await jest.advanceTimersByTimeAsync(0);
+
+    // A cancel is written into our control slot, superseding the request.
+    expect(mockHolder.mod.calls.docsWriteControl.length).toBeGreaterThanOrEqual(2);
+
+    const mark = mockHolder.mod.calls.syncTrail.length;
+    await jest.advanceTimersByTimeAsync(40_000);
+    expect(syncsSince(svc, mark)).toBe(0);
+  });
+
+  it('does not overlap ticks when a sync runs longer than the interval', async () => {
+    const svc = await watching();
+    const original = mockHolder.mod.syncTrail.bind(mockHolder.mod);
+    const gates: (() => void)[] = [];
+    let inFlight = 0;
+    let maxConcurrent = 0;
+    mockHolder.mod.syncTrail = async (...args: Parameters<typeof original>) => {
+      inFlight += 1;
+      maxConcurrent = Math.max(maxConcurrent, inFlight);
+      await original(...args);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      inFlight -= 1;
+    };
+
+    await svc.requestLive(friend.endpointId, 5 * 60_000);
+    // Four ticks' worth of interval against a sync that never finishes on its own.
+    await jest.advanceTimersByTimeAsync(32_000);
+
+    expect(maxConcurrent).toBe(1);
+
+    // Let the held sync finish so nothing is left pending when the test ends.
+    for (const open of gates.splice(0)) open();
+    await jest.advanceTimersByTimeAsync(0);
+    mockHolder.mod.syncTrail = original;
   });
 });

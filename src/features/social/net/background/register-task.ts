@@ -4,6 +4,7 @@ import type { SpanContext } from '@/features/dev/telemetry';
 import { backgroundOutbox } from './background-outbox';
 import { defineBackgroundLocationTask, isBackgroundLocationAvailable } from './background-task';
 import { defineBackgroundBackfillTask, isBackgroundBackfillAvailable } from './backfill-task';
+import { defineReviveTask, isReviveFenceAvailable } from './revive-task';
 import {
   createBackgroundFixDispatcher,
   type ActiveBackgroundFixHandler,
@@ -83,5 +84,34 @@ if (Platform.OS !== 'web' && isBackgroundBackfillAvailable()) {
   defineBackgroundBackfillTask(async (parent) => {
     const { runBackgroundBackfillHeadless } = await import('./headless-runtime');
     await runBackgroundBackfillHeadless(parent);
+  });
+}
+
+if (isReviveFenceAvailable()) {
+  // The iOS revive tripwire. Also defined at module scope — more so than the others, since the whole
+  // point is to be serviceable from a COLD launch that Core Location triggered, where nothing else
+  // in the app has run yet. Crossing the fence means the phone moved a couple of blocks since we
+  // last armed: re-arm location updates if we were killed, then re-center the fence on where we are
+  // now so it keeps following the user.
+  defineReviveTask(async (parent) => {
+    const { ensureSharingArmedHeadless } = await import('./headless-runtime');
+    await ensureSharingArmedHeadless('geofence', parent);
+    try {
+      const { armReviveFence } = await import('./revive-task');
+      const Location = await import('expo-location');
+      const pos = await Location.getLastKnownPositionAsync();
+      if (pos) {
+        await armReviveFence({
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          accuracyM: pos.coords.accuracy ?? 0,
+          headingDeg: pos.coords.heading ?? 0,
+          ts: pos.timestamp,
+        });
+      }
+    } catch (error) {
+      // A fence we failed to re-center still covers the old location, so the tripwire survives.
+      console.warn('[revive-fence] re-center failed', error);
+    }
   });
 }

@@ -57,8 +57,15 @@ export const DEFAULT_SAMPLING_CONFIG: SamplingConfig = {
   lowBatteryAccuracy: 'balanced',
   suspendBelowLevel: 0.05,
   liveIntervalMs: 4_000,
-  liveDistanceM: 5,
+  // 25 m, not 5 m. On iOS `timeInterval` is ignored, so this filter alone paced live mode: at 5 m a
+  // car crossed it roughly once a second and the engine — which bypasses the slot grid while live —
+  // published every one of them. 25 m keeps the OS from waking us for movement a map dot cannot
+  // show, and `liveMinPublishMs` below is what actually bounds the rate on both platforms.
+  liveDistanceM: 25,
   liveAccuracy: 'high',
+  liveMinPublishMs: 4_000,
+  liveMinDistanceM: 25,
+  liveMaxQuietMs: 30_000,
 };
 
 /** Build a policy from a (partial) config merged over {@link DEFAULT_SAMPLING_CONFIG}. */
