@@ -9,9 +9,16 @@ import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
-import org.json.JSONObject
+import kotlin.coroutines.cancellation.CancellationException
 
-private const val MAX_OUTPUT_TOKENS = 220
+// ASCII art tokenizes at roughly one token per punctuation character, so eight lines of drawing
+// plus the name and the format scaffolding needs far more headroom than prose of the same length.
+// Too small a budget truncates the drawing mid-line, which reads as "the model drew garbage".
+private const val MAX_OUTPUT_TOKENS = 384
+private const val TIGHT_OUTPUT_TOKENS = 256
+
+private const val ART_CHARSET =
+  "letters, digits, spaces, and / \\ | _ - ( ) [ ] < > ^ ~ * . , ' \" : ; = + o O @ #"
 
 private class GeneratorUnavailableException :
   CodedException("The on-device model is unavailable on this phone.")
@@ -19,38 +26,149 @@ private class GeneratorUnavailableException :
 private class InvalidGenerationException :
   CodedException("The on-device model did not return a usable ASCII icon. Generate another.")
 
-private fun generationPrompt(description: String, seed: Int): String =
-  """
-  Create one original ASCII cryptid profile icon inspired by this description:
-  "$description"
+/**
+ * The model answers in a line-delimited format rather than JSON on purpose.
+ *
+ * ASCII cryptids are mostly backslashes, and a backslash inside a JSON string has to be escaped.
+ * Small models almost never do that, and Android's `org.json` silently swallows the backslash of
+ * any escape it does not recognise (`\_` becomes `_`), so a JSON round trip quietly destroys the
+ * drawing. A NAME/ART/END block needs no escaping at all.
+ */
+private fun generationPrompt(description: String, seed: Int, tight: Boolean): String =
+  if (tight) {
+    """
+    Draw one tiny ASCII-art cryptid for: "$description"
 
-  Requirements:
-  - Return exactly one JSON object with string fields "name" and "sigil".
-  - The name is distinctive and 1-24 characters.
-  - The sigil uses only printable 7-bit ASCII, spaces, and line breaks.
-  - The sigil is 4-8 lines and no line exceeds 28 columns.
-  - Keep the silhouette legible in a small monospaced profile tile.
-  - Encode line breaks inside the JSON string as \n.
-  - Do not use markdown or add commentary.
-  - Variation seed: $seed.
-  """.trimIndent()
+    Answer in exactly this format, nothing else:
+    NAME: <name, 1-24 characters>
+    ART:
+    <at most 5 lines, each at most 24 characters>
+    END
 
-private fun parseGeneration(raw: String): Map<String, String> {
-  val start = raw.indexOf('{')
-  val end = raw.lastIndexOf('}')
-  if (start < 0 || end <= start) throw InvalidGenerationException()
+    Use only $ART_CHARSET.
+    Stop right after END. Variation seed: $seed.
+    """
+      .trimIndent()
+  } else {
+    """
+    Draw one original ASCII-art cryptid profile icon for: "$description"
 
-  val json =
-    try {
-      JSONObject(raw.substring(start, end + 1))
-    } catch (_: Exception) {
-      throw InvalidGenerationException()
+    Answer in exactly this format, nothing else:
+    NAME: <name, 1-24 characters>
+    ART:
+    <art line 1>
+    <art line 2>
+    END
+
+    Rules:
+    - Between 4 and 8 art lines. Never more than 28 characters on a line.
+    - Use only $ART_CHARSET.
+    - Write the art literally, one line per line. Do not escape anything.
+    - Keep the silhouette legible in a small monospaced profile tile.
+    - No markdown, no code fences, no explanation before or after.
+    - Stop right after END. Variation seed: $seed.
+    """
+      .trimIndent()
+  }
+
+private val NAME_LINE = Regex("""^\s*(?:\*\*)?name(?:\*\*)?\s*[:\-]\s*""", RegexOption.IGNORE_CASE)
+private val ART_LINE = Regex("""^\s*(?:\*\*)?art(?:\*\*)?\s*[:\-]?\s*$""", RegexOption.IGNORE_CASE)
+private val END_LINE = Regex("""^\s*end\s*$""", RegexOption.IGNORE_CASE)
+private val FENCE_LINE = Regex("""^\s*```[a-z0-9]*\s*$""", RegexOption.IGNORE_CASE)
+
+/** Reads the NAME/ART/END block. Tolerates a missing ART marker and a truncated END. */
+private fun parseDelimited(raw: String): Map<String, String>? {
+  val lines = raw.replace("\r\n", "\n").replace('\r', '\n').split("\n")
+  val nameIndex = lines.indexOfFirst { NAME_LINE.containsMatchIn(it) }
+  if (nameIndex < 0) return null
+  val name = NAME_LINE.replace(lines[nameIndex], "").trim().trim('"', '\'', '*', '`').trim()
+  if (name.isEmpty()) return null
+
+  val relativeArtStart = lines.drop(nameIndex + 1).indexOfFirst { ART_LINE.matches(it) }
+  val artStart = if (relativeArtStart < 0) nameIndex + 1 else nameIndex + relativeArtStart + 2
+  val body = lines.drop(artStart)
+  // A fenced drawing ends at its closing fence. Filtering fences out globally instead would let a
+  // model that opens a block and never writes END pull its own sign-off into the art.
+  val fenced = body.firstOrNull { it.isNotBlank() }?.let { FENCE_LINE.matches(it) } == true
+  val art =
+    if (fenced) {
+      body
+        .dropWhile { !FENCE_LINE.matches(it) }
+        .drop(1)
+        .takeWhile { !FENCE_LINE.matches(it) && !END_LINE.matches(it) }
+    } else {
+      body.takeWhile { !END_LINE.matches(it) }.filterNot { FENCE_LINE.matches(it) }
     }
-  val name = json.optString("name").trim()
-  val sigil = json.optString("sigil").replace("\r\n", "\n").replace('\r', '\n')
-  if (name.isEmpty() || sigil.isBlank()) throw InvalidGenerationException()
+      .joinToString("\n")
+  if (art.isBlank()) return null
+  return mapOf("name" to name, "sigil" to art)
+}
+
+/**
+ * Pulls a string field out of JSON-ish output without a JSON parser.
+ *
+ * Only the escapes a model plausibly means are decoded; a lone backslash is kept verbatim because
+ * in this context it is almost always part of the drawing. A truncated (unterminated) string still
+ * yields what arrived, since a cut-off drawing is repairable and an exception is not.
+ */
+private fun extractJsonField(raw: String, field: String): String? {
+  val opening = Regex(""""$field"\s*:\s*"""").find(raw) ?: return null
+  val out = StringBuilder()
+  var index = opening.range.last + 1
+  while (index < raw.length) {
+    val current = raw[index]
+    if (current == '"') return out.toString()
+    if (current != '\\' || index + 1 >= raw.length) {
+      out.append(current)
+      index += 1
+      continue
+    }
+    when (val escaped = raw[index + 1]) {
+      'n' -> {
+        out.append('\n')
+        index += 2
+      }
+      't' -> {
+        out.append("  ")
+        index += 2
+      }
+      'r' -> index += 2
+      '"' -> {
+        out.append(escaped)
+        index += 2
+      }
+      'u' -> {
+        val hex = raw.drop(index + 2).take(4)
+        val code = hex.toIntOrNull(16)
+        if (hex.length == 4 && code != null) {
+          out.append(Char(code))
+          index += 6
+        } else {
+          out.append(current)
+          index += 1
+        }
+      }
+      // Everything else, including `\\` and `\/`, is kept verbatim. The prompt asks the model not
+      // to escape anything, so in this fallback those are two drawing characters far more often
+      // than one escape, and collapsing them is the silent corruption this parser exists to avoid.
+      else -> {
+        out.append(current)
+        index += 1
+      }
+    }
+  }
+  return out.toString().ifBlank { null }
+}
+
+private fun parseJsonish(raw: String): Map<String, String>? {
+  val name = extractJsonField(raw, "name")?.trim() ?: return null
+  val sigil = extractJsonField(raw, "sigil") ?: extractJsonField(raw, "art") ?: return null
+  if (name.isEmpty() || sigil.isBlank()) return null
   return mapOf("name" to name, "sigil" to sigil)
 }
+
+internal fun parseGeneration(raw: String): Map<String, String> =
+  parseDelimited(raw) ?: parseJsonish(raw) ?: throw InvalidGenerationException()
 
 class CryptidGeneratorModule : Module() {
   private val generator by lazy { Generation.getClient() }
@@ -58,10 +176,11 @@ class CryptidGeneratorModule : Module() {
   private fun emit(
     phase: String,
     detail: String? = null,
+    attempt: Int = 1,
     downloadedBytes: Long? = null,
     totalBytes: Long? = null,
   ) {
-    val payload = mutableMapOf<String, Any>("phase" to phase, "attempt" to 1)
+    val payload = mutableMapOf<String, Any>("phase" to phase, "attempt" to attempt)
     detail?.let { payload["detail"] = it }
     downloadedBytes?.let { payload["downloadedBytes"] = it }
     totalBytes?.let { payload["totalBytes"] = it }
@@ -105,6 +224,45 @@ class CryptidGeneratorModule : Module() {
     }
   }
 
+  /**
+   * Attempt 1 is the roomy prompt; attempt 2 tightens the format and the token budget, which is
+   * the recovery path when the model rambles instead of drawing. Mirrors the iOS retry.
+   */
+  private suspend fun runGeneration(description: String, seed: Int): Map<String, String> {
+    var lastError: Exception? = null
+    for (attempt in 1..2) {
+      val tight = attempt > 1
+      val attemptSeed = if (seed >= Int.MAX_VALUE - 2) attempt else seed + attempt
+      emit(
+        "preparingModel",
+        detail = if (tight) "Reloading the model for a tighter retry" else "Warming up the model",
+        attempt = attempt,
+      )
+
+      val request =
+        generateContentRequest(TextPart(generationPrompt(description, attemptSeed, tight))) {
+          temperature = if (tight) 0.5f else 0.75f
+          topK = 20
+          maxOutputTokens = if (tight) TIGHT_OUTPUT_TOKENS else MAX_OUTPUT_TOKENS
+          this.seed = attemptSeed
+        }
+
+      emit("generating", detail = lastError?.message, attempt = attempt)
+      try {
+        generator.warmup()
+        val response = generator.generateContent(request)
+        emit("formatting", attempt = attempt)
+        val raw = response.candidates.firstOrNull()?.text ?: throw InvalidGenerationException()
+        return parseGeneration(raw)
+      } catch (cancellation: CancellationException) {
+        throw cancellation
+      } catch (error: Exception) {
+        lastError = error
+      }
+    }
+    throw lastError ?: InvalidGenerationException()
+  }
+
   override fun definition() = ModuleDefinition {
     Name("CryptidGenerator")
     Events("onGenerationProgress")
@@ -134,21 +292,7 @@ class CryptidGeneratorModule : Module() {
     AsyncFunction("generate") Coroutine
       { description: String, seed: Double ->
         ensureAvailable()
-        emit("preparingModel", detail = "Warming up the model")
-        generator.warmup()
-        val normalizedSeed = seed.toLong().coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
-        val request =
-          generateContentRequest(TextPart(generationPrompt(description, normalizedSeed))) {
-            temperature = 0.7f
-            topK = 20
-            maxOutputTokens = MAX_OUTPUT_TOKENS
-            this.seed = normalizedSeed
-          }
-        emit("generating")
-        val response = generator.generateContent(request)
-        emit("formatting")
-        val raw = response.candidates.firstOrNull()?.text ?: throw InvalidGenerationException()
-        parseGeneration(raw)
+        runGeneration(description, seed.toLong().coerceIn(1L, Int.MAX_VALUE.toLong()).toInt())
       }
   }
 }

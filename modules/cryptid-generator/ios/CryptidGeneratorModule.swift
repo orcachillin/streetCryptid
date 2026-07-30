@@ -16,7 +16,8 @@ private struct GeneratedCryptid {
   var name: String
 
   @Guide(
-    description: "Lines of printable 7-bit ASCII art, each at most 28 columns wide",
+    description:
+      "Lines of ASCII art, each at most 28 columns wide, drawn only with printable 7-bit ASCII",
     .maximumCount(8))
   var sigilLines: [String]
 }
@@ -31,9 +32,12 @@ private func generationInstructions(tight: Bool) -> String {
   }
   return """
     Create compact, original ASCII cryptid profile icons. Keep every silhouette legible in a
-    small monospaced tile. Use only printable 7-bit ASCII and spaces. Never use markdown and never
-    add commentary. Keep names between 1 and 24 characters, use 4 to 8 lines of art, keep every
-    line under 28 columns, and stop as soon as the drawing is complete.
+    small monospaced tile. Draw with letters, digits, spaces, and these characters only:
+    / \\ | _ - ( ) [ ] < > ^ ~ * . , ' " : ; = + o O @ #
+    Never use box-drawing characters, block characters, emoji, or any character outside printable
+    7-bit ASCII. Never use markdown and never add commentary. Keep names between 1 and 24
+    characters, use 4 to 8 lines of art, keep every line under 28 columns, and stop as soon as the
+    drawing is complete.
     """
 }
 
